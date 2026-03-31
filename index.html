@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>TERRA RUN</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+<style>
+  :root {
+    --bg:       #0a0c0f;
+    --surface:  #111418;
+    --border:   #1e2430;
+    --accent:   #00ff88;
+    --accent2:  #00cfff;
+    --danger:   #ff4455;
+    --warn:     #ffd700;
+    --text:     #e8eaf0;
+    --muted:    #5a6070;
+    --card:     #141820;
+    --font-display: 'Bebas Neue', sans-serif;
+    --font-mono:    'DM Mono', monospace;
+    --font-body:    'DM Sans', sans-serif;
+    --nav-h:    64px;
+    --radius:   12px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; width: 100%; background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 15px; overflow: hidden; }
+
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  #topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 56px; background: var(--bg); border-bottom: 1px solid var(--border); flex-shrink: 0; position: relative; z-index: 100; }
+  #topbar .logo { font-family: var(--font-display); font-size: 26px; letter-spacing: 2px; color: var(--accent); text-shadow: 0 0 20px rgba(0,255,136,0.4); }
+  #topbar .logo span { color: var(--text); }
+  .user-chip { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 99px; padding: 6px 12px 6px 8px; cursor: pointer; font-size: 13px; font-weight: 500; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; font-family: var(--font-mono); flex-shrink: 0; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
+  .live-dot.active { background: var(--accent); }
+  @keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.5; transform:scale(1.3); } }
+
+  .page { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .page.active { display: flex; }
+
+  #map-page { position: relative; }
+  #map { flex: 1; width: 100%; }
+  .leaflet-container { background: #0d0f14 !important; }
+  .leaflet-tile { filter: brightness(0.7) saturate(0.4) hue-rotate(180deg); }
+
+  #run-hud { position: absolute; bottom: calc(var(--nav-h) + 12px); left: 50%; transform: translateX(-50%); z-index: 500; width: calc(100% - 24px); max-width: 400px; }
+  .hud-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; background: rgba(10,12,15,0.92); border: 1px solid var(--border); border-radius: var(--radius); backdrop-filter: blur(12px); overflow: hidden; margin-bottom: 10px; }
+  .hud-stat { padding: 12px 8px; text-align: center; border-right: 1px solid var(--border); }
+  .hud-stat:last-child { border-right: none; }
+  .hud-stat .val { font-family: var(--font-mono); font-size: 20px; font-weight: 500; color: var(--accent); line-height: 1; }
+  .hud-stat .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+  .hud-actions { display: flex; gap: 10px; }
+  .btn-run { flex: 1; height: 52px; background: var(--accent); color: #000; border: none; border-radius: var(--radius); font-family: var(--font-display); font-size: 20px; letter-spacing: 1px; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn-run:active { transform: scale(0.97); }
+  .btn-run.running { background: var(--danger); color: #fff; animation: runpulse 2s ease-in-out infinite; }
+  @keyframes runpulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,68,85,0.4); } 50% { box-shadow: 0 0 0 12px rgba(255,68,85,0); } }
+  .btn-icon { width: 52px; height: 52px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 20px; flex-shrink: 0; }
+  .btn-icon:active { transform: scale(0.95); }
+
+  .map-ctrl { position: absolute; top: 12px; right: 12px; z-index: 500; display: flex; flex-direction: column; gap: 8px; }
+  .map-btn { width: 40px; height: 40px; background: rgba(10,12,15,0.92); border: 1px solid var(--border); border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 18px; backdrop-filter: blur(8px); color: var(--text); }
+  .map-btn:active { transform: scale(0.9); }
+
+  /* ── Simulate Mode ── */
+  .sim-toggle { display: flex; align-items: center; justify-content: center; gap: 5px; background: rgba(10,12,15,0.92); border: 1px solid var(--warn); border-radius: 8px; width: 40px; height: 40px; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--warn); font-family: var(--font-mono); backdrop-filter: blur(8px); transition: background 0.15s; flex-direction: column; line-height: 1; }
+  .sim-toggle.active { background: rgba(255,215,0,0.15); }
+  .sim-toggle:active { transform: scale(0.9); }
+
+  #sim-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 500; background: rgba(10,12,15,0.9); border: 1px solid var(--warn); border-radius: 99px; padding: 7px 18px; font-size: 12px; font-weight: 500; color: var(--warn); font-family: var(--font-mono); letter-spacing: 0.5px; pointer-events: none; display: none; white-space: nowrap; backdrop-filter: blur(8px); animation: simPulse 2s ease-in-out infinite; }
+  #sim-banner.show { display: block; }
+  @keyframes simPulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+
+  #sim-count { position: absolute; bottom: calc(var(--nav-h) + 172px); left: 12px; z-index: 500; background: rgba(10,12,15,0.92); border: 1px solid var(--warn); border-radius: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--warn); display: none; backdrop-filter: blur(8px); }
+  #sim-count.show { display: block; }
+
+  @keyframes clickRipple { 0% { transform:scale(0.5); opacity:1; } 100% { transform:scale(2.5); opacity:0; } }
+  .click-ripple { animation: clickRipple 0.5s ease-out forwards; }
+
+  #zone-popup { position: absolute; top: 12px; left: 12px; z-index: 500; background: rgba(10,12,15,0.92); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; backdrop-filter: blur(12px); font-size: 13px; display: none; max-width: calc(100% - 80px); }
+  #zone-popup.show { display: block; animation: slideIn 0.2s ease; }
+  @keyframes slideIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+  #zone-popup .zname { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  #zone-popup .zmeta { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+  #zone-popup .zclose { float: right; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; margin-left: 8px; }
+
+  #nav { height: var(--nav-h); display: flex; background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0; z-index: 200; }
+  .nav-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; transition: color 0.15s; -webkit-tap-highlight-color: transparent; }
+  .nav-item .nav-icon { font-size: 22px; }
+  .nav-item.active { color: var(--accent); }
+  .nav-item.active .nav-icon { filter: drop-shadow(0 0 6px var(--accent)); }
+
+  #lb-page { overflow-y: auto; }
+  .page-header { padding: 20px 16px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .page-header h1 { font-family: var(--font-display); font-size: 32px; letter-spacing: 1.5px; line-height: 1; }
+  .page-header p { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .lb-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .lb-tab { flex: 1; padding: 12px 0; text-align: center; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid transparent; transition: all 0.15s; }
+  .lb-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  #lb-list { overflow-y: auto; flex: 1; padding: 8px 0; }
+  .lb-entry { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .lb-rank { font-family: var(--font-mono); font-size: 13px; color: var(--muted); width: 22px; text-align: center; flex-shrink: 0; }
+  .lb-rank.top { color: var(--warn); font-weight: 600; }
+  .lb-info { flex: 1; min-width: 0; }
+  .lb-name { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lb-sub  { font-size: 12px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
+  .lb-score { text-align: right; flex-shrink: 0; }
+  .lb-score .score-val { font-family: var(--font-mono); font-size: 15px; font-weight: 500; color: var(--accent); }
+  .lb-score .score-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+
+  .podium { display: flex; align-items: flex-end; justify-content: center; gap: 12px; padding: 20px 16px 16px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .pod { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; }
+  .pod .pod-avatar { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; font-family: var(--font-mono); border: 2px solid; }
+  .pod.gold .pod-avatar   { border-color: var(--warn); box-shadow: 0 0 16px rgba(255,215,0,0.3); }
+  .pod.silver .pod-avatar { border-color: #aaa; }
+  .pod.bronze .pod-avatar { border-color: #cd7f32; }
+  .pod .pod-name  { font-size: 12px; font-weight: 500; text-align: center; }
+  .pod .pod-score { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .pod .pod-plinth { width: 100%; border-radius: 6px 6px 0 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-size: 20px; color: #000; }
+  .pod.gold   .pod-plinth { height: 52px; background: var(--warn); }
+  .pod.silver .pod-plinth { height: 40px; background: #aaa; }
+  .pod.bronze .pod-plinth { height: 32px; background: #cd7f32; }
+
+  #profile-page { overflow-y: auto; }
+  .profile-hero { padding: 28px 16px 20px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .profile-avatar-big { width: 72px; height: 72px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; font-family: var(--font-mono); border: 3px solid var(--accent); box-shadow: 0 0 24px rgba(0,255,136,0.25); }
+  .profile-name { font-family: var(--font-display); font-size: 28px; letter-spacing: 1px; }
+  .profile-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
+  .pstat { background: var(--card); padding: 16px 8px; text-align: center; }
+  .pstat .pval { font-family: var(--font-mono); font-size: 22px; font-weight: 500; color: var(--accent); }
+  .pstat .plbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+  .section { padding: 16px; border-bottom: 1px solid var(--border); }
+  .section-title { font-family: var(--font-display); font-size: 18px; letter-spacing: 1px; margin-bottom: 12px; color: var(--muted); }
+  .strava-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 48px; background: #FC4C02; border: none; border-radius: var(--radius); color: #fff; font-weight: 600; font-size: 15px; cursor: pointer; }
+  .strava-btn.connected { background: #1e2430; border: 1px solid #FC4C02; color: #FC4C02; }
+  .my-zones-list { display: flex; flex-direction: column; gap: 8px; }
+  .zone-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; display: flex; align-items: center; gap: 10px; }
+  .zone-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .zone-info { flex: 1; min-width: 0; }
+  .zone-info .zn { font-weight: 500; font-size: 14px; }
+  .zone-info .zm { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
+
+  #login-screen { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 24px; }
+  #login-screen.hidden { display: none; }
+  .login-logo { font-family: var(--font-display); font-size: 64px; letter-spacing: 4px; color: var(--accent); text-shadow: 0 0 40px rgba(0,255,136,0.4); line-height: 1; margin-bottom: 4px; }
+  .login-sub { font-size: 12px; text-transform: uppercase; letter-spacing: 3px; color: var(--muted); font-family: var(--font-mono); margin-bottom: 48px; }
+  .login-tagline { font-size: 15px; color: var(--text); text-align: center; max-width: 280px; margin-bottom: 36px; line-height: 1.6; }
+  .login-input { width: 100%; max-width: 320px; height: 52px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 16px; font-family: var(--font-body); padding: 0 16px; outline: none; margin-bottom: 12px; transition: border-color 0.15s; }
+  .login-input:focus { border-color: var(--accent); }
+  .login-input::placeholder { color: var(--muted); }
+  .login-btn { width: 100%; max-width: 320px; height: 52px; background: var(--accent); border: none; border-radius: var(--radius); color: #000; font-family: var(--font-display); font-size: 22px; letter-spacing: 2px; cursor: pointer; margin-bottom: 16px; }
+  .login-note { font-size: 11px; color: var(--muted); text-align: center; max-width: 280px; }
+
+  #toast { position: fixed; bottom: calc(var(--nav-h) + 16px); left: 50%; transform: translateX(-50%); z-index: 2000; background: var(--surface); border: 1px solid var(--border); border-radius: 99px; padding: 10px 20px; font-size: 13px; font-weight: 500; white-space: nowrap; opacity: 0; transition: opacity 0.25s; pointer-events: none; max-width: calc(100vw - 32px); text-align: center; }
+  #toast.show { opacity: 1; }
+  #toast.success { border-color: var(--accent); color: var(--accent); }
+  #toast.error   { border-color: var(--danger); color: var(--danger); }
+  #toast.warn    { border-color: var(--warn);   color: var(--warn); }
+
+  .gps-trail { stroke-dasharray: 6 4; animation: dashMove 0.6s linear infinite; }
+  @keyframes dashMove { to { stroke-dashoffset: -20; } }
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+  .empty-state .emoji { font-size: 40px; margin-bottom: 12px; }
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen">
+  <div class="login-logo">TERRA</div>
+  <div class="login-sub">RUN · CLAIM · DOMINATE</div>
+  <div class="login-tagline">Turn every run into territory. Capture zones. Defend your turf. Rule the map.</div>
+  <input id="login-name" class="login-input" type="text" placeholder="Enter your runner name" maxlength="30" autocomplete="off"/>
+  <button class="login-btn" onclick="guestLogin()">START RUNNING</button>
+  <div class="login-note">No account needed for v1. Your data lives locally + on our server during this session.</div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <div id="topbar">
+    <div class="logo">TERRA<span>RUN</span></div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div class="live-dot" id="gps-dot"></div>
+      <div class="user-chip" onclick="showPage('profile')">
+        <div class="avatar" id="topbar-avatar" style="background:#00ff8820;color:var(--accent);">?</div>
+        <span id="topbar-name">Guest</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Map Page -->
+  <div id="map-page" class="page active">
+    <div id="map"></div>
+
+    <!-- Map controls -->
+    <div class="map-ctrl">
+      <div class="map-btn" onclick="centerOnMe()">📍</div>
+      <div class="map-btn" onclick="toggleLayers()">🗺️</div>
+      <div class="sim-toggle" id="sim-btn" onclick="toggleSimMode()" title="Simulate GPS by clicking map">
+        <span style="font-size:14px;">🖱️</span>
+        <span>SIM</span>
+      </div>
+    </div>
+
+    <!-- Simulate mode banner (top centre) -->
+    <div id="sim-banner">🖱️ SIM MODE ON — click anywhere on the map to drop GPS points</div>
+
+    <!-- Point counter (bottom left) -->
+    <div id="sim-count">0 pts</div>
+
+    <!-- Zone popup -->
+    <div id="zone-popup">
+      <span class="zclose" onclick="closeZonePopup()">x</span>
+      <div class="zname" id="zp-name"></div>
+      <div class="zmeta" id="zp-meta"></div>
+    </div>
+
+    <!-- Run HUD -->
+    <div id="run-hud">
+      <div class="hud-stats">
+        <div class="hud-stat"><div class="val" id="hud-dist">0.00</div><div class="lbl">KM</div></div>
+        <div class="hud-stat"><div class="val" id="hud-time">00:00</div><div class="lbl">TIME</div></div>
+        <div class="hud-stat"><div class="val" id="hud-pace">--:--</div><div class="lbl">PACE</div></div>
+      </div>
+      <div class="hud-actions">
+        <button class="btn-run" id="run-btn" onclick="toggleRun()">
+          <span id="run-btn-icon">&#9654;</span>
+          <span id="run-btn-label">START RUN</span>
+        </button>
+        <div class="btn-icon" onclick="claimTerritory()" title="Claim territory">🏴</div>
+        <div class="btn-icon" onclick="undoSimPoint()" id="undo-btn" title="Undo last point" style="display:none;border-color:var(--warn);">↩</div>
+        <div class="btn-icon" onclick="clearSimPoints()" id="clear-btn" title="Clear all points" style="display:none;border-color:var(--danger);">🗑</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaderboard Page -->
+  <div id="lb-page" class="page">
+    <div class="page-header"><h1>LEADERBOARD</h1><p>Global territory rankings</p></div>
+    <div class="lb-tabs">
+      <div class="lb-tab active" onclick="switchLbTab('zones',this)">Zones</div>
+      <div class="lb-tab" onclick="switchLbTab('km',this)">Distance</div>
+      <div class="lb-tab" onclick="switchLbTab('area',this)">Area km2</div>
+    </div>
+    <div id="podium-wrap"></div>
+    <div id="lb-list"></div>
+  </div>
+
+  <!-- Profile Page -->
+  <div id="profile-page" class="page">
+    <div class="profile-hero">
+      <div class="profile-avatar-big" id="prof-avatar" style="background:#00ff8820;color:var(--accent);">?</div>
+      <div class="profile-name" id="prof-name">RUNNER</div>
+    </div>
+    <div class="profile-stats">
+      <div class="pstat"><div class="pval" id="prof-zones">0</div><div class="plbl">Zones</div></div>
+      <div class="pstat"><div class="pval" id="prof-km">0</div><div class="plbl">KM Run</div></div>
+      <div class="pstat"><div class="pval" id="prof-rank">#-</div><div class="plbl">Rank</div></div>
+    </div>
+    <div class="section">
+      <div class="section-title">STRAVA SYNC</div>
+      <button class="strava-btn" id="strava-btn" onclick="connectStrava()">
+        <span>🔶</span> Connect Strava
+      </button>
+    </div>
+    <div class="section">
+      <div class="section-title">MY ZONES</div>
+      <div class="my-zones-list" id="my-zones-list">
+        <div class="empty-state"><div class="emoji">🏃</div>Start running to claim your first zone!</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Nav -->
+  <div id="nav">
+    <div class="nav-item active" id="nav-map" onclick="showPage('map')"><span class="nav-icon">🗺️</span>Map</div>
+    <div class="nav-item" id="nav-lb" onclick="showPage('lb')"><span class="nav-icon">🏆</span>Ranks</div>
+    <div class="nav-item" id="nav-profile" onclick="showPage('profile')"><span class="nav-icon">👤</span>Profile</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// Change this to your Railway URL after deploying, e.g.:
+// const API = 'https://terra-run.up.railway.app';
+const API = 'http://localhost:5000';
+const REFRESH_INTERVAL_MS = 15000; // auto-refresh map every 15 seconds
+
+// State
+let currentUser = null;
+let isRunning   = false;
+let gpsPoints   = [];
+let watchId     = null;
+let runTimer    = null;
+let runSeconds  = 0;
+let map         = null;
+let myPathLine  = null;
+let myPosMarker = null;
+let territoriesLayer = null;
+let lbData      = [];
+let lbSortKey   = 'zones';
+let showTerritories = true;
+let simMode     = false;
+let simClickHandler = null;
+let simDotMarkers = [];
+let simPreviewPoly = null;
+let refreshTimer = null;
+let lastTerritoryHash = '';
+let wasSimMode = false;  // remembers if points were collected via sim mode
+
+// Init
+window.addEventListener('load', () => {
+  initMap();
+  if (location.search.includes('strava=connected')) {
+    toast('Strava connected!', 'success');
+    history.replaceState(null,'','/');
+  }
+});
+
+function initMap() {
+  map = L.map('map', { zoomControl: false, attributionControl: false })
+    .setView([28.6139, 77.2090], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => {
+      map.setView([pos.coords.latitude, pos.coords.longitude], 15);
+    }, () => {});
+  }
+  territoriesLayer = L.layerGroup().addTo(map);
+  loadTerritories();
+}
+
+// ── Simulate Mode ─────────────────────────────────────────────────────────────
+function toggleSimMode() {
+  if (!currentUser) { toast('Login first to use Sim Mode', 'warn'); return; }
+  simMode = !simMode;
+  const btn    = document.getElementById('sim-btn');
+  const banner = document.getElementById('sim-banner');
+  const ctr    = document.getElementById('sim-count');
+
+  if (simMode) {
+    wasSimMode = true;  // remember points came from sim mode
+    btn.classList.add('active');
+    banner.classList.add('show');
+    ctr.classList.add('show');
+
+    // Auto-start a run
+    if (!isRunning) {
+      gpsPoints  = [];
+      runSeconds = 0;
+      isRunning  = true;
+      document.getElementById('run-btn').classList.add('running');
+      document.getElementById('run-btn-label').textContent = 'STOP';
+      document.getElementById('run-btn-icon').innerHTML = '&#9632;';
+      document.getElementById('gps-dot').classList.add('active');
+      myPathLine = L.polyline([], { color: currentUser.color, weight: 4, opacity: 0.9, className: 'gps-trail' }).addTo(map);
+      runTimer = setInterval(() => { runSeconds++; updateHUD(); }, 1000);
+    }
+
+    updateSimCounter();
+    toast('SIM MODE ON — click anywhere on the map to drop GPS points!', 'warn');
+
+    simClickHandler = function(e) {
+      if (!simMode || !isRunning) return;
+      addSimPoint(e.latlng.lat, e.latlng.lng);
+    };
+    map.on('click', simClickHandler);
+    document.getElementById('map').style.cursor = 'crosshair';
+
+  } else {
+    btn.classList.remove('active');
+    banner.classList.remove('show');
+    document.getElementById('map').style.cursor = '';
+    if (simClickHandler) { map.off('click', simClickHandler); simClickHandler = null; }
+    if (gpsPoints.length >= 4) {
+      ctr.textContent = gpsPoints.length + ' pts ready — tap the flag to claim!';
+      toast('SIM MODE OFF — ' + gpsPoints.length + ' points recorded. Tap the flag to claim territory!', 'success');
+    } else {
+      ctr.classList.remove('show');
+      toast('SIM MODE OFF — need at least 4 clicks to claim territory', 'warn');
+    }
+  }
+}
+
+function addSimPoint(lat, lng) {
+  gpsPoints.push([lat, lng]);
+  var n = gpsPoints.length;
+  if (myPathLine) myPathLine.setLatLngs(gpsPoints);
+
+  // Ripple animation at click
+  var rippleIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:22px;height:22px;border-radius:50%;border:2px solid ' + currentUser.color + ';background:' + currentUser.color + '33;animation:clickRipple 0.5s ease-out forwards;"></div>',
+    iconSize: [22,22], iconAnchor: [11,11]
+  });
+  var rm = L.marker([lat,lng], { icon: rippleIcon }).addTo(map);
+  setTimeout(function(){ map.removeLayer(rm); }, 600);
+
+  // Numbered dot marker
+  var dotIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:20px;height:20px;border-radius:50%;background:' + currentUser.color + ';border:2px solid #fff;box-shadow:0 0 6px ' + currentUser.color + ';display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#000;font-family:monospace;">' + n + '</div>',
+    iconSize: [20,20], iconAnchor: [10,10]
+  });
+  var dm = L.marker([lat,lng], { icon: dotIcon }).addTo(map);
+  simDotMarkers.push(dm);
+
+  // Show undo/clear buttons
+  document.getElementById('undo-btn').style.display = 'flex';
+  document.getElementById('clear-btn').style.display = 'flex';
+
+  // Move the runner marker to latest point
+  var posIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:16px;height:16px;border-radius:50%;background:' + currentUser.color + ';border:2px solid #fff;box-shadow:0 0 14px ' + currentUser.color + ';"></div>',
+    iconSize: [16,16], iconAnchor: [8,8]
+  });
+  if (!myPosMarker) {
+    myPosMarker = L.marker([lat,lng], { icon: posIcon }).addTo(map);
+  } else {
+    myPosMarker.setLatLng([lat,lng]).setIcon(posIcon);
+  }
+
+  // Show live preview of the territory shape (when 3+ points)
+  updateSimPreview();
+  updateHUD();
+  updateSimCounter();
+}
+
+function updateSimPreview() {
+  if (simPreviewPoly) { map.removeLayer(simPreviewPoly); simPreviewPoly = null; }
+  if (gpsPoints.length < 3) return;
+  // Close the polygon for preview
+  var previewPts = gpsPoints.slice();
+  previewPts.push(previewPts[0]);
+  simPreviewPoly = L.polygon(previewPts, {
+    color: currentUser.color,
+    fillColor: currentUser.color,
+    fillOpacity: 0.15,
+    weight: 1.5,
+    opacity: 0.6,
+    dashArray: '6 4'
+  }).addTo(map);
+}
+
+function updateSimCounter() {
+  var n = gpsPoints.length;
+  var ctr = document.getElementById('sim-count');
+  if (n < 4) {
+    ctr.textContent = n + ' pts (need ' + (4-n) + ' more)';
+    ctr.style.borderColor = 'var(--warn)';
+    ctr.style.color = 'var(--warn)';
+  } else {
+    ctr.textContent = n + ' pts — ready to claim!';
+    ctr.style.borderColor = 'var(--accent)';
+    ctr.style.color = 'var(--accent)';
+  }
+}
+
+function clearSimDots() {
+  simDotMarkers.forEach(function(m){ map.removeLayer(m); });
+  simDotMarkers = [];
+  // Also clear the preview polygon if any
+  if (simPreviewPoly) { map.removeLayer(simPreviewPoly); simPreviewPoly = null; }
+}
+
+function undoSimPoint() {
+  if (!simMode || gpsPoints.length === 0) return;
+  gpsPoints.pop();
+  // Remove last dot marker
+  if (simDotMarkers.length > 0) {
+    map.removeLayer(simDotMarkers[simDotMarkers.length - 1]);
+    simDotMarkers.pop();
+  }
+  if (myPathLine) myPathLine.setLatLngs(gpsPoints);
+  updateSimCounter();
+  updateSimPreview();
+  if (gpsPoints.length === 0) {
+    document.getElementById('undo-btn').style.display = 'none';
+    document.getElementById('clear-btn').style.display = 'none';
+  }
+}
+
+function clearSimPoints() {
+  if (!simMode) return;
+  gpsPoints = [];
+  wasSimMode = false;
+  clearSimDots();
+  if (myPathLine) myPathLine.setLatLngs([]);
+  if (myPosMarker) { map.removeLayer(myPosMarker); myPosMarker = null; }
+  updateSimCounter();
+  document.getElementById('undo-btn').style.display = 'none';
+  document.getElementById('clear-btn').style.display = 'none';
+  toast('Points cleared — start clicking again', 'warn');
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function guestLogin() {
+  var name = document.getElementById('login-name').value.trim();
+  if (!name) { toast('Enter your runner name', 'error'); return; }
+  var r = await apiFetch('/api/guest-login', 'POST', { name: name });
+  if (r.ok) {
+    currentUser = r.user;
+    document.getElementById('login-screen').classList.add('hidden');
+    updateUserUI();
+    loadTerritories();
+    loadLeaderboard();
+  } else {
+    toast('Login failed', 'error');
+  }
+}
+
+function updateUserUI() {
+  if (!currentUser) return;
+  var av = document.getElementById('topbar-avatar');
+  av.textContent = currentUser.avatar;
+  av.style.background = currentUser.color + '22';
+  av.style.color = currentUser.color;
+  document.getElementById('topbar-name').textContent = currentUser.name.split(' ')[0];
+  var pa = document.getElementById('prof-avatar');
+  pa.textContent = currentUser.avatar;
+  pa.style.background = currentUser.color + '22';
+  pa.style.color = currentUser.color;
+  pa.style.borderColor = currentUser.color;
+  document.getElementById('prof-name').textContent = currentUser.name.toUpperCase();
+  document.getElementById('prof-zones').textContent = currentUser.zones || 0;
+  document.getElementById('prof-km').textContent = (currentUser.total_km || 0).toFixed(0);
+}
+
+// ── Run Tracking ──────────────────────────────────────────────────────────────
+function toggleRun() {
+  if (!currentUser) { toast('Please login first', 'warn'); return; }
+  isRunning ? stopRun() : startRun();
+}
+
+function startRun() {
+  if (!navigator.geolocation) { toast('GPS not available in this browser', 'error'); return; }
+  isRunning = true;
+  gpsPoints = [];
+  runSeconds = 0;
+  document.getElementById('run-btn').classList.add('running');
+  document.getElementById('run-btn-label').textContent = 'STOP';
+  document.getElementById('run-btn-icon').innerHTML = '&#9632;';
+  document.getElementById('gps-dot').classList.add('active');
+  myPathLine = L.polyline([], { color: currentUser.color, weight: 4, opacity: 0.9, className: 'gps-trail' }).addTo(map);
+  watchId = navigator.geolocation.watchPosition(onGPS, onGPSErr, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
+  runTimer = setInterval(() => { runSeconds++; updateHUD(); }, 1000);
+  toast('Run started! GPS tracking active', 'success');
+}
+
+function stopRun() {
+  isRunning = false;
+  // Turn off sim mode if it was on
+  if (simMode) {
+    simMode = false;
+    document.getElementById('sim-btn').classList.remove('active');
+    document.getElementById('sim-banner').classList.remove('show');
+    document.getElementById('map').style.cursor = '';
+    if (simClickHandler) { map.off('click', simClickHandler); simClickHandler = null; }
+  }
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  if (runTimer) { clearInterval(runTimer); runTimer = null; }
+  document.getElementById('run-btn').classList.remove('running');
+  document.getElementById('run-btn-label').textContent = 'START RUN';
+  document.getElementById('run-btn-icon').innerHTML = '&#9654;';
+  document.getElementById('gps-dot').classList.remove('active');
+  if (gpsPoints.length >= 4) {
+    toast('Run stopped. Tap the flag to claim territory!', 'warn');
+  } else {
+    toast('Run stopped. Need more GPS points to claim.', 'warn');
+    wasSimMode = false;
+    if (r.user) { currentUser = r.user; updateUserUI(); }
+    if (myPathLine) { map.removeLayer(myPathLine); myPathLine = null; }
+    clearSimDots();
+    document.getElementById('sim-count').classList.remove('show');
+  }
+}
+
+function onGPS(pos) {
+  var lat = pos.coords.latitude, lng = pos.coords.longitude;
+  gpsPoints.push([lat, lng]);
+  if (myPathLine) myPathLine.setLatLngs(gpsPoints);
+  var icon = L.divIcon({
+    className: '',
+    html: '<div style="width:16px;height:16px;border-radius:50%;background:' + currentUser.color + ';border:2px solid #fff;box-shadow:0 0 12px ' + currentUser.color + '"></div>',
+    iconSize: [16,16], iconAnchor: [8,8]
+  });
+  if (!myPosMarker) { myPosMarker = L.marker([lat,lng], { icon: icon }).addTo(map); }
+  else { myPosMarker.setLatLng([lat,lng]).setIcon(icon); }
+  if (gpsPoints.length <= 3) map.setView([lat,lng]);
+  updateHUD();
+}
+
+function onGPSErr(err) { toast('GPS signal lost — check permissions', 'error'); }
+
+function updateHUD() {
+  var dist = 0;
+  for (var i = 1; i < gpsPoints.length; i++) { dist += haversine(gpsPoints[i-1], gpsPoints[i]); }
+  document.getElementById('hud-dist').textContent = dist.toFixed(2);
+  var m = String(Math.floor(runSeconds / 60)).padStart(2,'0');
+  var s = String(runSeconds % 60).padStart(2,'0');
+  document.getElementById('hud-time').textContent = m + ':' + s;
+  if (dist > 0.05) {
+    var pace = runSeconds / dist;
+    var pm = Math.floor(pace/60);
+    var ps = String(Math.round(pace%60)).padStart(2,'0');
+    document.getElementById('hud-pace').textContent = pm + ':' + ps;
+  }
+}
+
+function haversine(a, b) {
+  var R = 6371;
+  var dLat = (b[0]-a[0]) * Math.PI/180;
+  var dLon = (b[1]-a[1]) * Math.PI/180;
+  var x = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(a[0]*Math.PI/180)*Math.cos(b[0]*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+// ── Territory Claim ───────────────────────────────────────────────────────────
+async function claimTerritory() {
+  if (!currentUser) { toast('Login first', 'warn'); return; }
+  if (gpsPoints.length < 4) { toast('Need at least 4 GPS points. Click more spots!', 'warn'); return; }
+  var name = prompt('Name your territory:', currentUser.name.split(' ')[0] + "'s Zone");
+  if (!name) return;
+  toast('Claiming territory...', 'success');
+  var r = await apiFetch('/api/territories', 'POST', { gps_points: gpsPoints, name: name, sim_mode: wasSimMode });
+  if (r && r.ok) {
+    toast(r.message || 'Territory claimed!', r.stolen_from && r.stolen_from.length ? 'warn' : 'success');
+    wasSimMode = false;
+    if (myPathLine) { map.removeLayer(myPathLine); myPathLine = null; }
+    clearSimDots();
+    document.getElementById('sim-count').classList.remove('show');
+    gpsPoints = [];
+    isRunning = false;
+    if (runTimer) { clearInterval(runTimer); runTimer = null; }
+    document.getElementById('run-btn').classList.remove('running');
+    document.getElementById('run-btn-label').textContent = 'START RUN';
+    document.getElementById('run-btn-icon').innerHTML = '&#9654;';
+    document.getElementById('gps-dot').classList.remove('active');
+    loadTerritories();
+    loadLeaderboard();
+    var me = await apiFetch('/api/me');
+    if (me.ok) { currentUser = me.user; updateUserUI(); }
+  } else {
+    toast((r && r.error) || 'Failed to claim territory', 'error');
+  }
+}
+
+// ── Map Territories ───────────────────────────────────────────────────────────
+async function loadTerritories() {
+  var data = await apiFetch('/api/territories');
+  if (!Array.isArray(data)) return;
+  renderTerritories(data);
+}
+
+function showZonePopup(t) {
+  document.getElementById('zp-name').textContent = t.name;
+  document.getElementById('zp-meta').textContent = (t.owner_name || '?') + ' · ' + t.area_km2 + ' km2 · ' + new Date(t.captured_at).toLocaleDateString();
+  document.getElementById('zone-popup').classList.add('show');
+}
+function closeZonePopup() { document.getElementById('zone-popup').classList.remove('show'); }
+function toggleLayers() {
+  showTerritories = !showTerritories;
+  if (showTerritories) map.addLayer(territoriesLayer);
+  else map.removeLayer(territoriesLayer);
+}
+function centerOnMe() {
+  if (myPosMarker) { map.setView(myPosMarker.getLatLng(), 16); return; }
+  navigator.geolocation.getCurrentPosition(function(pos) { map.setView([pos.coords.latitude, pos.coords.longitude], 16); }, function(){ toast('GPS not available', 'error'); });
+}
+
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+async function loadLeaderboard() {
+  var data = await apiFetch('/api/leaderboard');
+  if (!Array.isArray(data)) return;
+  lbData = data;
+  renderLeaderboard();
+}
+
+function switchLbTab(key, el) {
+  lbSortKey = key;
+  document.querySelectorAll('.lb-tab').forEach(function(t){ t.classList.remove('active'); });
+  el.classList.add('active');
+  renderLeaderboard();
+}
+
+function renderLeaderboard() {
+  var sorted = lbData.slice().sort(function(a,b){
+    if (lbSortKey === 'zones') return b.zones - a.zones;
+    if (lbSortKey === 'km')    return b.total_km - a.total_km;
+    return b.area_km2 - a.area_km2;
+  });
+  if (currentUser) {
+    var idx = sorted.findIndex(function(u){ return u.id === currentUser.id; });
+    document.getElementById('prof-rank').textContent = idx >= 0 ? '#' + (idx+1) : '#-';
+  }
+  var podClasses = ['gold','silver','bronze'];
+  var podMedals  = ['1st','2nd','3rd'];
+  var podOrder   = [1,0,2];
+  var top3 = sorted.slice(0,3);
+  var podHTML = '<div class="podium">';
+  podOrder.forEach(function(i){
+    var u = top3[i];
+    if (!u) { podHTML += '<div class="pod"></div>'; return; }
+    var val = lbSortKey === 'zones' ? u.zones + ' zones' : lbSortKey === 'km' ? u.total_km + ' km' : u.area_km2 + ' km2';
+    podHTML += '<div class="pod ' + podClasses[i] + '"><div class="pod-avatar" style="background:' + u.color + '22;color:' + u.color + '">' + u.avatar + '</div><div class="pod-name">' + u.name.split(' ')[0] + '</div><div class="pod-score">' + val + '</div><div class="pod-plinth">' + podMedals[i] + '</div></div>';
+  });
+  podHTML += '</div>';
+  document.getElementById('podium-wrap').innerHTML = podHTML;
+
+  var rest = sorted.slice(3);
+  if (rest.length === 0) {
+    document.getElementById('lb-list').innerHTML = '<div class="empty-state"><div class="emoji">🏃</div>Be the first to claim territory!</div>';
+    return;
+  }
+  document.getElementById('lb-list').innerHTML = rest.map(function(u, i){
+    var isMe = currentUser && u.id === currentUser.id;
+    var val = lbSortKey === 'zones' ? u.zones : lbSortKey === 'km' ? u.total_km : u.area_km2;
+    var lbl = lbSortKey === 'zones' ? 'zones' : lbSortKey === 'km' ? 'km' : 'km2';
+    return '<div class="lb-entry" style="' + (isMe ? 'background:' + currentUser.color + '11;border-left:2px solid ' + currentUser.color : '') + '"><div class="lb-rank">' + (i+4) + '</div><div class="avatar" style="background:' + u.color + '22;color:' + u.color + ';width:36px;height:36px;font-size:13px;">' + u.avatar + '</div><div class="lb-info"><div class="lb-name">' + u.name + (isMe ? ' (you)' : '') + '</div><div class="lb-sub">' + u.zones + ' zones · ' + u.total_km + ' km</div></div><div class="lb-score"><div class="score-val">' + val + '</div><div class="score-lbl">' + lbl + '</div></div></div>';
+  }).join('');
+}
+
+// ── Profile ───────────────────────────────────────────────────────────────────
+function updateMyZones(allTerritories) {
+  if (!currentUser || !allTerritories) return;
+  var mine = allTerritories.filter(function(t){ return t.user_id === currentUser.id; });
+  var el = document.getElementById('my-zones-list');
+  if (mine.length === 0) { el.innerHTML = '<div class="empty-state"><div class="emoji">🏃</div>No zones yet. Go run!</div>'; return; }
+  el.innerHTML = mine.map(function(t){ return '<div class="zone-card"><div class="zone-dot" style="background:' + t.color + '"></div><div class="zone-info"><div class="zn">' + t.name + '</div><div class="zm">' + t.area_km2 + ' km2 · ' + new Date(t.captured_at).toLocaleDateString() + '</div></div></div>'; }).join('');
+}
+
+function connectStrava() {
+  if (!currentUser) { toast('Login first', 'warn'); return; }
+  window.location.href = API + '/strava/connect';
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showPage(page) {
+  document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
+  document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+  if (page === 'map')     { document.getElementById('map-page').classList.add('active'); document.getElementById('nav-map').classList.add('active'); }
+  if (page === 'lb')      { document.getElementById('lb-page').classList.add('active');  document.getElementById('nav-lb').classList.add('active'); loadLeaderboard(); }
+  if (page === 'profile') { document.getElementById('profile-page').classList.add('active'); document.getElementById('nav-profile').classList.add('active'); updateMyZones(); }
+}
+
+// ── API Helper ────────────────────────────────────────────────────────────────
+async function apiFetch(path, method, body) {
+  method = method || 'GET';
+  try {
+    var opts = { method: method, credentials: 'include', headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    var r = await fetch(API + path, opts);
+    return await r.json();
+  } catch(e) {
+    // Backend offline — handle locally
+    if (method === 'POST' && path === '/api/territories' && body) {
+      return handleLocalTerritoryClaim(body);
+    }
+    return getMockData(path, body);
+  }
+}
+
+function handleLocalTerritoryClaim(body) {
+  if (!localCurrentUid || !localUsers[localCurrentUid]) return { ok: false, error: 'Not logged in' };
+  var u = localUsers[localCurrentUid];
+  var pts = body.gps_points || [];
+  var isSimMode = body.sim_mode || false;
+
+  // Build polygon: sim mode = exact points, real run = convex hull
+  var polygon;
+  if (isSimMode) {
+    polygon = pts.map(function(p){ return [parseFloat(p[0]), parseFloat(p[1])]; });
+    if (polygon.length > 0 && (polygon[0][0] !== polygon[polygon.length-1][0] || polygon[0][1] !== polygon[polygon.length-1][1])) {
+      polygon.push(polygon[0]);
+    }
+  } else {
+    polygon = clientConvexHull(pts);
+  }
+
+  if (polygon.length < 3) return { ok: false, error: 'Could not form polygon' };
+
+  var area = clientPolygonArea(polygon);
+  var tid = 't_local_' + Date.now();
+
+  // Steal check
+  var stolenFrom = [];
+  localTerritories = localTerritories.filter(function(t) {
+    if (t.user_id !== localCurrentUid && clientBboxOverlap(polygon, t.polygon)) {
+      stolenFrom.push(t.owner_name);
+      if (localUsers[t.user_id] && localUsers[t.user_id].zones > 0) localUsers[t.user_id].zones--;
+      return false;
+    }
+    return true;
+  });
+
+  var newT = { id: tid, user_id: localCurrentUid, name: body.name || 'My Zone', polygon: polygon, area_km2: Math.round(area*10000)/10000, captured_at: new Date().toISOString(), color: u.color, owner_name: u.name };
+  localTerritories.push(newT);
+  u.zones = (u.zones || 0) + 1;
+
+  // Distance estimate
+  var dist = 0;
+  for (var i = 1; i < pts.length; i++) {
+    var dlat = pts[i][0]-pts[i-1][0], dlon = pts[i][1]-pts[i-1][1];
+    dist += Math.sqrt(dlat*dlat + dlon*dlon) * 111;
+  }
+  u.total_km = Math.round((u.total_km + dist) * 100) / 100;
+
+  return { ok: true, territory: newT, stolen_from: stolenFrom, message: 'Territory claimed!' + (stolenFrom.length ? ' Stolen from: ' + stolenFrom.join(', ') : '') };
+}
+
+function clientConvexHull(points) {
+  var pts = points.map(function(p){ return [parseFloat(p[0]), parseFloat(p[1])]; });
+  pts.sort(function(a,b){ return a[0]-b[0] || a[1]-b[1]; });
+  if (pts.length <= 1) return pts;
+  function cross(o,a,b){ return (a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]); }
+  var lower=[], upper=[];
+  for (var i=0;i<pts.length;i++){ while(lower.length>=2&&cross(lower[lower.length-2],lower[lower.length-1],pts[i])<=0)lower.pop(); lower.push(pts[i]); }
+  for (var i=pts.length-1;i>=0;i--){ while(upper.length>=2&&cross(upper[upper.length-2],upper[upper.length-1],pts[i])<=0)upper.pop(); upper.push(pts[i]); }
+  return lower.slice(0,-1).concat(upper.slice(0,-1));
+}
+
+function clientPolygonArea(coords) {
+  var n=coords.length, area=0;
+  for (var i=0;i<n;i++){
+    var j=(i+1)%n;
+    var lat1=coords[i][0]*Math.PI/180, lon1=coords[i][1]*Math.PI/180;
+    var lat2=coords[j][0]*Math.PI/180, lon2=coords[j][1]*Math.PI/180;
+    area += (lon2-lon1)*(2+Math.sin(lat1)+Math.sin(lat2));
+  }
+  return Math.abs(area*6371*6371/2);
+}
+
+function clientBboxOverlap(p1, p2) {
+  function bb(p){ var lats=p.map(function(c){return c[0];}),lons=p.map(function(c){return c[1];}); return [Math.min.apply(null,lats),Math.max.apply(null,lats),Math.min.apply(null,lons),Math.max.apply(null,lons)]; }
+  var a=bb(p1),b=bb(p2);
+  return !(a[1]<b[0]-0.0001||b[1]<a[0]-0.0001||a[3]<b[2]-0.0001||b[3]<a[2]-0.0001);
+}
+
+function getMockData(path, body) {
+  if (path === '/api/leaderboard') {
+    var board = DEMO_LEADERBOARD_JS.slice();
+    // Inject local users into the leaderboard
+    Object.values(localUsers).forEach(function(u) {
+      var existing = board.findIndex(function(e){ return e.id === u.id; });
+      var zoneArea = localTerritories.filter(function(t){ return t.user_id === u.id; }).reduce(function(s,t){ return s + (t.area_km2||0); }, 0);
+      var entry = { id: u.id, name: u.name, avatar: u.avatar, color: u.color, zones: u.zones||0, total_km: u.total_km||0, area_km2: Math.round(zoneArea*1000)/1000, score: (u.zones||0)*100 + Math.floor(u.total_km||0) };
+      if (existing >= 0) board[existing] = entry; else board.push(entry);
+    });
+    return board;
+  }
+  if (path === '/api/guest-login') {
+    var n = (body && body.name) || 'Runner';
+    var uid = 'u_local_' + n.replace(/\s+/g,'').toLowerCase().slice(0,6);
+    if (!localUsers[uid]) localUsers[uid] = { id: uid, name: n, avatar: n.slice(0,2).toUpperCase(), color: '#00ff88', total_km: 0, zones: 0 };
+    localCurrentUid = uid;
+    return { ok: true, user: localUsers[uid] };
+  }
+  if (path === '/api/me') {
+    if (localCurrentUid && localUsers[localCurrentUid]) return { ok: true, user: localUsers[localCurrentUid] };
+    return { ok: false };
+  }
+  if (path === '/api/territories') {
+    // Return demo territories + any locally claimed ones
+    return DEMO_TERRITORIES_JS.concat(localTerritories);
+  }
+  return {};
+}
+
+// Local storage for offline/demo mode
+var localTerritories = [];
+var localUsers = {};
+var localCurrentUid = null;
+
+const DEMO_TERRITORIES_JS = [
+  {id:'t1',user_id:'u5',name:'Connaught Place Loop',polygon:[[28.6328,77.2197],[28.6358,77.2227],[28.6338,77.2257],[28.6308,77.2237],[28.6298,77.2207]],area_km2:0.42,captured_at:'2025-03-28T06:12:00Z',color:'#ffd700',owner_name:'Dev Patel'},
+  {id:'t2',user_id:'u3',name:'India Gate Circuit',polygon:[[28.6129,77.2295],[28.6159,77.2335],[28.6139,77.2375],[28.6109,77.2345],[28.6099,77.2305]],area_km2:0.61,captured_at:'2025-03-29T05:45:00Z',color:'#00cfff',owner_name:'Rohan Verma'},
+  {id:'t3',user_id:'u1',name:'Lodhi Garden Route',polygon:[[28.5934,77.2198],[28.5964,77.2238],[28.5944,77.2268],[28.5914,77.2238],[28.5904,77.2208]],area_km2:0.38,captured_at:'2025-03-30T06:00:00Z',color:'#00ff88',owner_name:'Arjun Sharma'},
+  {id:'t4',user_id:'u2',name:"Humayun's Tomb Run",polygon:[[28.5933,77.2507],[28.5963,77.2547],[28.5943,77.2577],[28.5913,77.2547],[28.5903,77.2517]],area_km2:0.29,captured_at:'2025-03-30T07:30:00Z',color:'#ff6b35',owner_name:'Priya Mehta'},
+  {id:'t5',user_id:'u5',name:'Nehru Place Sprint',polygon:[[28.5491,77.2534],[28.5521,77.2564],[28.5501,77.2594],[28.5471,77.2564],[28.5461,77.2534]],area_km2:0.51,captured_at:'2025-03-27T06:00:00Z',color:'#ffd700',owner_name:'Dev Patel'},
+];
+
+const DEMO_LEADERBOARD_JS = [
+  {id:'u5',name:'Dev Patel',avatar:'DP',color:'#ffd700',zones:18,total_km:305.8,area_km2:2.1,score:2105},
+  {id:'u3',name:'Rohan Verma',avatar:'RV',color:'#00cfff',zones:12,total_km:211.0,area_km2:1.4,score:1411},
+  {id:'u1',name:'Arjun Sharma',avatar:'AS',color:'#00ff88',zones:7,total_km:142.3,area_km2:0.8,score:842},
+  {id:'u2',name:'Priya Mehta',avatar:'PM',color:'#ff6b35',zones:5,total_km:98.7,area_km2:0.5,score:598},
+  {id:'u4',name:'Sneha Kapoor',avatar:'SK',color:'#ff3cac',zones:3,total_km:76.4,area_km2:0.3,score:376},
+];
+
+// Toast
+var toastTimer;
+function toast(msg, type) {
+  type = type || 'success';
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ el.classList.remove('show'); }, 3400);
+}
+
+// ── Auto-refresh (multiplayer live updates) ──────────────────────────────────
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  // Initial load
+  loadTerritories();
+  loadLeaderboard();
+  // Poll every 15s for changes from other players
+  refreshTimer = setInterval(function() {
+    if (!isRunning) {  // don't refresh while actively running (avoid map flicker)
+      silentRefreshTerritories();
+    }
+  }, REFRESH_INTERVAL_MS);
+}
+
+async function silentRefreshTerritories() {
+  var data = await apiFetch('/api/territories');
+  if (!Array.isArray(data)) return;
+  // Only redraw if something actually changed
+  var hash = JSON.stringify(data.map(function(t){ return t.id + t.user_id + t.captured_at; }));
+  if (hash === lastTerritoryHash) return;
+  lastTerritoryHash = hash;
+  // Check if any of MY zones were stolen
+  if (currentUser) {
+    var myOldZones = territoriesLayer ? getMyZoneIds() : [];
+    renderTerritories(data);
+    var myNewZones = getMyZoneIds();
+    var stolen = myOldZones.filter(function(id){ return myNewZones.indexOf(id) === -1; });
+    if (stolen.length > 0) {
+      toast('Your territory was stolen! Run to reclaim it!', 'error');
+    }
+  } else {
+    renderTerritories(data);
+  }
+  loadLeaderboard();
+}
+
+function getMyZoneIds() {
+  var ids = [];
+  territoriesLayer.eachLayer(function(layer) {
+    if (layer.options && layer.options.terraId && layer.options.terraUid === (currentUser && currentUser.id)) {
+      ids.push(layer.options.terraId);
+    }
+  });
+  return ids;
+}
+
+function renderTerritories(data) {
+  territoriesLayer.clearLayers();
+  data.forEach(function(t) {
+    if (!t.polygon || t.polygon.length < 3) return;
+    var isMe = currentUser && t.user_id === currentUser.id;
+    var poly = L.polygon(t.polygon, {
+      color: t.color || '#00ff88',
+      fillColor: t.color || '#00ff88',
+      fillOpacity: isMe ? 0.35 : 0.2,
+      weight: isMe ? 2.5 : 1.5,
+      opacity: 0.9,
+      terraId: t.id,
+      terraUid: t.user_id
+    });
+    poly.on('click', function() { showZonePopup(t); });
+    poly.addTo(territoriesLayer);
+  });
+  updateMyZones(data);
+}
+
+setTimeout(function(){ startAutoRefresh(); }, 500);
+</script>
+</body>
+</html>
