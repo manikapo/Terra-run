@@ -12,7 +12,15 @@ import requests
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "terra-run-secret-change-in-prod")
-CORS(app, supports_credentials=True, origins="*")
+
+# Cookie settings for cross-domain (Netlify frontend → Railway backend)
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"]   = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+CORS(app, supports_credentials=True, origins="*",
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET","POST","DELETE","OPTIONS"])
 
 # ── Config ────────────────────────────────────────────────────────────────────
 STRAVA_CLIENT_ID     = os.getenv("STRAVA_CLIENT_ID", "YOUR_STRAVA_CLIENT_ID")
@@ -132,6 +140,9 @@ def assign_color(user_count):
     return COLOR_POOL[user_count % len(COLOR_POOL)]
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
+def get_uid():
+    """Get user id from session cookie OR X-User-Id header (for cross-domain)."""
+    return session.get("user_id") or request.headers.get("X-User-Id")
 @app.route("/api/guest-login", methods=["POST"])
 def guest_login():
     data = request.json or {}
@@ -153,7 +164,7 @@ def guest_login():
 
 @app.route("/api/me")
 def me():
-    uid = session.get("user_id")
+    uid = get_uid()
     if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
@@ -179,7 +190,7 @@ def get_territories():
 
 @app.route("/api/territories", methods=["POST"])
 def create_territory():
-    uid = session.get("user_id")
+    uid = get_uid()
     if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
 
     data     = request.json or {}
@@ -273,7 +284,7 @@ def create_territory():
 
 @app.route("/api/territories/<tid>", methods=["DELETE"])
 def delete_territory(tid):
-    uid = session.get("user_id")
+    uid = get_uid()
     if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
     conn = get_db(); c = conn.cursor()
     t = c.execute("SELECT * FROM territories WHERE id=? AND user_id=?", (tid,uid)).fetchone()
@@ -317,7 +328,7 @@ def ping():
 # ── Strava OAuth ──────────────────────────────────────────────────────────────
 @app.route("/strava/connect")
 def strava_connect():
-    uid = session.get("user_id")
+    uid = get_uid()
     if not uid: return jsonify({"error":"Login first"}),401
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={STRAVA_CLIENT_ID}&response_type=code"
@@ -345,7 +356,7 @@ def strava_callback():
 
 @app.route("/api/strava/activities")
 def strava_activities():
-    uid = session.get("user_id")
+    uid = get_uid()
     if not uid: return jsonify({"error":"not logged in"}),401
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
