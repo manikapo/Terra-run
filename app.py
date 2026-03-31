@@ -19,6 +19,19 @@ app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 # Disable flask-cors and handle CORS manually for full control
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        res = app.make_response("")
+        origin = request.headers.get("Origin", "*")
+        res.headers["Access-Control-Allow-Origin"]      = origin
+        res.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept"
+        res.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
+        res.headers["Access-Control-Allow-Credentials"] = "true"
+        res.headers["Access-Control-Max-Age"]           = "3600"
+        res.status_code = 204
+        return res
+
 @app.after_request
 def after_request(response):
     origin = request.headers.get("Origin", "*")
@@ -29,10 +42,7 @@ def after_request(response):
     response.headers["Access-Control-Max-Age"] = "3600"
     return response
 
-@app.route("/api/<path:path>", methods=["OPTIONS"])
-@app.route("/strava/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    return "", 204
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 STRAVA_CLIENT_ID     = os.getenv("STRAVA_CLIENT_ID", "YOUR_STRAVA_CLIENT_ID")
@@ -153,8 +163,22 @@ def assign_color(user_count):
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def get_uid():
-    """Get user id from session cookie OR X-User-Id header (for cross-domain)."""
-    return session.get("user_id") or request.headers.get("X-User-Id")
+    """Get user id from session, header, body, or query param — tries all methods."""    # 1. Session cookie (works when same domain)
+    uid = session.get("user_id")
+    if uid: return uid
+    # 2. Custom header
+    uid = request.headers.get("X-User-Id")
+    if uid: return uid
+    # 3. Inside JSON body (_uid field)
+    try:
+        data = request.get_json(silent=True) or {}
+        uid = data.get("_uid")
+        if uid: return uid
+    except: pass
+    # 4. Query parameter
+    uid = request.args.get("_uid")
+    if uid: return uid
+    return None
 @app.route("/api/guest-login", methods=["POST"])
 def guest_login():
     data = request.json or {}
@@ -332,10 +356,29 @@ def get_leaderboard():
     for i,e in enumerate(board): e["rank"] = i+1
     return jsonify(board)
 
-# ── Ping (health check for Railway) ──────────────────────────────────────────
+# ── Ping + debug ─────────────────────────────────────────────────────────────
 @app.route("/ping")
 def ping():
-    return jsonify({"ok":True,"message":"TERRA RUN is alive"})
+    conn = get_db()
+    user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    zone_count = conn.execute("SELECT COUNT(*) FROM territories").fetchone()[0]
+    conn.close()
+    return jsonify({"ok":True,"message":"TERRA RUN is alive",
+                    "users":user_count,"zones":zone_count})
+
+@app.route("/api/debug/whoami", methods=["GET","OPTIONS"])
+def whoami():
+    uid = get_uid()
+    if not uid:
+        return jsonify({"uid":None,"found":False,
+                        "session":dict(session),
+                        "header":request.headers.get("X-User-Id"),
+                        "param":request.args.get("_uid")})
+    conn = get_db()
+    user = conn.execute("SELECT id,name,color,zones FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    return jsonify({"uid":uid,"found":bool(user),
+                    "user":dict(user) if user else None})
 
 # ── Strava OAuth ──────────────────────────────────────────────────────────────
 @app.route("/strava/connect")
