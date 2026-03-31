@@ -18,9 +18,21 @@ app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
-CORS(app, supports_credentials=True, origins="*",
-     allow_headers=["Content-Type", "Authorization"],
-     methods=["GET","POST","DELETE","OPTIONS"])
+# Disable flask-cors and handle CORS manually for full control
+@app.after_request
+def after_request(response):
+    origin = request.headers.get("Origin", "*")
+    response.headers["Access-Control-Allow-Origin"]  = origin
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-User-Id,Authorization,Accept"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Max-Age"] = "3600"
+    return response
+
+@app.route("/api/<path:path>", methods=["OPTIONS"])
+@app.route("/strava/<path:path>", methods=["OPTIONS"])
+def handle_options(path):
+    return "", 204
 
 # ── Config ────────────────────────────────────────────────────────────────────
 STRAVA_CLIENT_ID     = os.getenv("STRAVA_CLIENT_ID", "YOUR_STRAVA_CLIENT_ID")
