@@ -10,6 +10,15 @@ import json, math, os, uuid, hashlib, sqlite3
 from datetime import datetime
 import requests
 
+try:
+    from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
+    from shapely.validation import make_valid
+    SHAPELY_AVAILABLE = True
+    print("Shapely loaded OK")
+except ImportError:
+    SHAPELY_AVAILABLE = False
+    print("Shapely not available - using fallback")
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "terra-run-secret-change-in-prod")
 
@@ -159,7 +168,6 @@ def bbox_overlap(poly1, poly2, thr=0.0001):
     return not (a[1]<b[0]-thr or b[1]<a[0]-thr or a[3]<b[2]-thr or b[3]<a[2]-thr)
 
 def point_in_polygon(point, polygon):
-    """Ray casting: is point [lat,lng] inside polygon?"""
     x, y = point[0], point[1]
     n = len(polygon)
     inside = False
@@ -172,68 +180,48 @@ def point_in_polygon(point, polygon):
         j = i
     return inside
 
-def segments_intersect(p1, p2, p3, p4):
-    """Do line segments p1-p2 and p3-p4 cross?"""
-    def cross2d(o, a, b):
-        return (a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0])
-    d1=cross2d(p3,p4,p1); d2=cross2d(p3,p4,p2)
-    d3=cross2d(p1,p2,p3); d4=cross2d(p1,p2,p4)
-    return ((d1>0 and d2<0) or (d1<0 and d2>0)) and            ((d3>0 and d4<0) or (d3<0 and d4>0))
-
 def polygons_truly_overlap(poly1, poly2):
-    """True polygon intersection: vertices inside other polygon OR edges cross."""
     if not bbox_overlap(poly1, poly2):
         return False
+    if SHAPELY_AVAILABLE:
+        try:
+            s1 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly1]))
+            s2 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly2]))
+            return s1.intersects(s2) and not s1.touches(s2)
+        except: pass
     for pt in poly1:
         if point_in_polygon(pt, poly2): return True
     for pt in poly2:
         if point_in_polygon(pt, poly1): return True
-    n1, n2 = len(poly1), len(poly2)
-    for i in range(n1):
-        for j in range(n2):
-            if segments_intersect(poly1[i], poly1[(i+1)%n1],
-                                   poly2[j], poly2[(j+1)%n2]):
-                return True
     return False
 
-def subtract_polygon(original, cutter):
-    """
-    Determines what remains of 'original' after 'cutter' is applied.
-    Logic:
-      - If cutter fully contains all original vertices -> entire zone consumed -> []
-      - If original fully contains all cutter vertices -> cutter is inside original,
-        original shrinks but survives (we keep original minus the interior bite)
-      - If partial overlap -> keep the outside portion
-    Returns [] if consumed, [remaining] if partial.
-    """
-    if not polygons_truly_overlap(original, cutter):
-        return [original]  # No real overlap, nothing to subtract
+def get_overlap_percentage(poly1, poly2):
+    if not SHAPELY_AVAILABLE: return 100.0
+    try:
+        s1 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly1]))
+        s2 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly2]))
+        if s1.area == 0: return 0
+        return (s1.intersection(s2).area / s1.area) * 100
+    except: return 100.0
 
-    orig_verts_outside = [pt for pt in original if not point_in_polygon(pt, cutter)]
-    orig_verts_inside  = [pt for pt in original if point_in_polygon(pt, cutter)]
-
-    # Case 1: ALL original vertices are inside cutter -> fully consumed
-    if len(orig_verts_inside) == len(original) and len(orig_verts_outside) == 0:
+def clip_polygon(original, cutter):
+    if not SHAPELY_AVAILABLE: return []
+    try:
+        s1 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in original]))
+        s2 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in cutter]))
+        remaining = make_valid(s1.difference(s2))
+        if remaining.is_empty: return []
+        geoms = list(remaining.geoms) if remaining.geom_type == 'MultiPolygon' else [remaining]
+        results = []
+        for g in geoms:
+            if g.geom_type == 'Polygon' and g.area > 0.000001:
+                coords = [[c[0],c[1]] for c in list(g.exterior.coords)]
+                if len(coords) >= 3:
+                    results.append(coords)
+        return results
+    except Exception as e:
+        print("clip_polygon error:", e)
         return []
-
-    # Case 2: NO original vertices are inside cutter -> cutter is a small bite
-    # from inside or crossing. Keep vertices of original plus add cutter vertices
-    # that are OUTSIDE original as new boundary points.
-    if len(orig_verts_outside) == len(original):
-        # Cutter is fully inside original - original shrinks but survives
-        # Return original as-is (cutter creates a hole we can't represent simply)
-        # In practice just keep the original zone intact
-        return [original]
-
-    # Case 3: Partial overlap - some vertices inside, some outside
-    # Keep the outside vertices and form remaining polygon
-    if len(orig_verts_outside) >= 3:
-        remaining = convex_hull(orig_verts_outside)
-        if len(remaining) >= 3 and polygon_area_km2(remaining) > 0.0005:
-            return [remaining]
-
-    # Less than 3 vertices outside -> zone is effectively consumed
-    return []
 
 def assign_color(user_count):
     return COLOR_POOL[user_count % len(COLOR_POOL)]
@@ -334,39 +322,57 @@ def create_territory():
         conn.close()
         return jsonify({"ok":False,"error":"User not found"}),404
 
-    # Find overlapping zones owned by OTHERS and handle partial/full steal
+    # Proportional steal: >50% overlap = full steal, <=50% = clean clip
+    STEAL_THRESHOLD = 50.0
     all_t = c.execute("SELECT * FROM territories WHERE user_id != ?", (uid,)).fetchall()
     stolen_from = []
+    seen_uids = set()
+
     for t in all_t:
         t_poly = json.loads(t["polygon"])
         if not polygons_truly_overlap(polygon, t_poly):
-            continue  # No real intersection, skip
+            continue
 
-        remaining_polys = subtract_polygon(t_poly, polygon)
+        overlap_pct = get_overlap_percentage(t_poly, polygon)
 
-        if len(remaining_polys) == 0:
-            # Entire zone consumed - delete it
+        if overlap_pct >= STEAL_THRESHOLD:
+            # Major overlap - full zone stolen
             stolen_from.append(t["user_id"])
             c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
             c.execute("UPDATE users SET zones = MAX(0, zones-1) WHERE id=?", (t["user_id"],))
         else:
-            # Partial overlap - shrink the zone, keep it alive
-            remaining = remaining_polys[0]
-            new_area = round(polygon_area_km2(remaining), 4)
-            c.execute("UPDATE territories SET polygon=?, area_km2=? WHERE id=?",
-                      (json.dumps(remaining), new_area, t["id"]))
-            stolen_from.append(t["user_id"])
+            # Minor overlap - clip cleanly with Shapely, Player 1 keeps the rest
+            remaining_polys = clip_polygon(t_poly, polygon)
+            if not remaining_polys:
+                stolen_from.append(t["user_id"])
+                c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                c.execute("UPDATE users SET zones = MAX(0, zones-1) WHERE id=?", (t["user_id"],))
+            else:
+                largest = max(remaining_polys, key=lambda p: polygon_area_km2(p))
+                new_area = round(polygon_area_km2(largest), 4)
+                c.execute("UPDATE territories SET polygon=?, area_km2=? WHERE id=?",
+                          (json.dumps(largest), new_area, t["id"]))
+                # If zone split into pieces, save each piece as a separate zone
+                for extra in remaining_polys[1:]:
+                    if polygon_area_km2(extra) > 0.0001:
+                        extra_tid = "t_" + uuid.uuid4().hex[:8]
+                        c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
+                                  (extra_tid, t["user_id"], t["name"]+" (part)",
+                                   json.dumps(extra),
+                                   round(polygon_area_km2(extra), 4),
+                                   datetime.utcnow().isoformat()+"Z",
+                                   t["color"]))
+                        c.execute("UPDATE users SET zones=zones+1 WHERE id=?", (t["user_id"],))
+                stolen_from.append(t["user_id"])
 
-    # Get names of stolen-from users (deduplicated)
     stolen_names = []
-    seen_uids = set()
     for suid in stolen_from:
         if suid not in seen_uids:
             su = c.execute("SELECT name FROM users WHERE id=?", (suid,)).fetchone()
             if su: stolen_names.append(su["name"])
             seen_uids.add(suid)
 
-    # Remove overlapping zones owned by THIS user (will be replaced by new zone)
+    # Remove own overlapping zones (will be replaced by new zone)
     my_t = c.execute("SELECT * FROM territories WHERE user_id=?", (uid,)).fetchall()
     for t in my_t:
         t_poly = json.loads(t["polygon"])
