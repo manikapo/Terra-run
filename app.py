@@ -200,7 +200,20 @@ def polygons_truly_overlap(poly1, poly2):
     return False
 
 def get_overlap_percentage(poly1, poly2):
-    if not SHAPELY_AVAILABLE: return 100.0
+    if not SHAPELY_AVAILABLE:
+        # Fallback: use bounding box intersection ratio as estimate
+        def bb(p):
+            lats=[c[0] for c in p]; lons=[c[1] for c in p]
+            return min(lats),max(lats),min(lons),max(lons)
+        a = bb(poly1); b = bb(poly2)
+        # Intersection bbox
+        ilat1=max(a[0],b[0]); ilat2=min(a[1],b[1])
+        ilon1=max(a[2],b[2]); ilon2=min(a[3],b[3])
+        if ilat2 <= ilat1 or ilon2 <= ilon1: return 0.0
+        inter_area = (ilat2-ilat1)*(ilon2-ilon1)
+        poly1_area = (a[1]-a[0])*(a[3]-a[2])
+        if poly1_area == 0: return 0.0
+        return min(100.0, (inter_area/poly1_area)*100)
     try:
         s1 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly1]))
         s2 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly2]))
@@ -209,7 +222,9 @@ def get_overlap_percentage(poly1, poly2):
     except: return 100.0
 
 def clip_polygon(original, cutter):
-    if not SHAPELY_AVAILABLE: return []
+    if not SHAPELY_AVAILABLE:
+        # Shapely not available - keep original zone intact (no clipping)
+        return [original]
     try:
         s1 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in original]))
         s2 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in cutter]))
@@ -326,7 +341,8 @@ def create_territory():
         conn.close()
         return jsonify({"ok":False,"error":"User not found"}),404
 
-    # Proportional steal: >50% overlap = full steal, <=50% = clean clip
+    # Proportional steal: >50% overlap = full steal, <=50% = keep original zone
+    # Uses Shapely for precise clipping when available, bbox ratio as fallback
     STEAL_THRESHOLD = 50.0
     all_t = c.execute("SELECT * FROM territories WHERE user_id != ?", (uid,)).fetchall()
     stolen_from = []
@@ -462,8 +478,9 @@ def get_leaderboard():
 # ── Ping + debug ─────────────────────────────────────────────────────────────
 @app.route("/ping")
 def ping():
-    """Instant health check - no DB query so Railway healthcheck never times out."""
-    return jsonify({"ok":True,"message":"TERRA RUN is alive","version":"2.0"})
+    """Instant health check."""
+    return jsonify({"ok":True,"message":"TERRA RUN is alive",
+                    "version":"2.0","shapely":SHAPELY_AVAILABLE})
 
 @app.route("/api/debug/whoami", methods=["GET","OPTIONS"])
 def whoami():
