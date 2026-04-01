@@ -64,8 +64,12 @@ COLOR_POOL = ["#00ff88","#ff6b35","#00cfff","#ff3cac","#ffd700","#a78bfa",
 
 # ── SQLite helpers ────────────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    # WAL mode allows multiple readers + one writer simultaneously
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 def init_db():
@@ -526,16 +530,7 @@ def strava_activities():
     return jsonify(result)
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
-import threading
-
-def boot():
-    """Run DB init in background so app starts and passes healthcheck immediately."""
-    try:
-        init_db()
-    except Exception as e:
-        print("DB init error:", e)
-
-threading.Thread(target=boot, daemon=True).start()
+init_db()
 
 if __name__ == "__main__":
     print("TERRA RUN v2 — http://localhost:5000")
