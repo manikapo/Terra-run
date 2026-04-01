@@ -64,6 +64,12 @@ COLOR_POOL = ["#00ff88","#ff6b35","#00cfff","#ff3cac","#ffd700","#a78bfa",
 
 # ── SQLite helpers ────────────────────────────────────────────────────────────
 def get_db():
+    # Ensure the directory exists (important for Railway Volume)
+    import os
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+        print(f"Created directory: {db_dir}")
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     # WAL mode allows multiple readers + one writer simultaneously
@@ -479,8 +485,22 @@ def get_leaderboard():
 @app.route("/ping")
 def ping():
     """Instant health check."""
-    return jsonify({"ok":True,"message":"TERRA RUN is alive",
-                    "version":"2.0","shapely":SHAPELY_AVAILABLE})
+    import os
+    db_exists = os.path.exists(DB_PATH)
+    db_size   = os.path.getsize(DB_PATH) if db_exists else 0
+    data_dir  = os.path.dirname(DB_PATH)
+    dir_exists = os.path.exists(data_dir)
+    return jsonify({
+        "ok": True,
+        "message": "TERRA RUN is alive",
+        "version": "2.0",
+        "shapely": SHAPELY_AVAILABLE,
+        "db_path": DB_PATH,
+        "db_exists": db_exists,
+        "db_size_bytes": db_size,
+        "data_dir_exists": dir_exists,
+        "cwd": os.getcwd()
+    })
 
 @app.route("/api/debug/whoami", methods=["GET","OPTIONS"])
 def whoami():
