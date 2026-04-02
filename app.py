@@ -1,7 +1,7 @@
 """
-TERRA RUN — Flask Backend v2
-SQLite persistence + multiplayer ready
-pip install flask flask-cors requests python-dotenv gunicorn
+Infinite Me — Backend v2
+8me.in | Run. Claim. Own your world.
+pip install flask flask-cors requests python-dotenv gunicorn shapely
 """
 
 from flask import Flask, jsonify, request, redirect, session
@@ -145,7 +145,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print("Database ready:", DB_PATH)
+    print("Infinite Me — Database ready:", DB_PATH)
 
 # ── Geo helpers ───────────────────────────────────────────────────────────────
 def polygon_area_km2(coords):
@@ -327,12 +327,43 @@ def create_territory():
     if len(gps) < 4:
         return jsonify({"ok":False,"error":"Need at least 4 GPS points"}),400
 
-    # Build polygon
+    # Build polygon from GPS path
     if sim_mode:
+        # Sim mode — use exact clicked points
         polygon = [[float(p[0]),float(p[1])] for p in gps]
         if polygon[0] != polygon[-1]: polygon.append(polygon[0])
     else:
-        polygon = convex_hull(gps)
+        # Real GPS run — build polygon from actual path
+        # If path forms a loop (start ~= end), use the path directly
+        # Otherwise create a buffer polygon around the path
+        pts = [[float(p[0]),float(p[1])] for p in gps]
+
+        if SHAPELY_AVAILABLE:
+            try:
+                from shapely.geometry import LineString
+                from shapely.ops import unary_union
+                line = LineString([(p[1],p[0]) for p in pts])  # lng,lat for shapely
+                # Buffer by ~10 meters (0.0001 degrees approx)
+                buffered = line.buffer(0.0001)
+                buffered = make_valid(buffered)
+                if not buffered.is_empty and buffered.geom_type == 'Polygon':
+                    # Convert back to lat,lng
+                    polygon = [[c[1],c[0]] for c in buffered.exterior.coords]
+                else:
+                    polygon = convex_hull(pts)
+            except Exception as e:
+                print("Buffer error:", e)
+                polygon = convex_hull(pts)
+        else:
+            # No Shapely — check if it's a loop
+            start = pts[0]; end = pts[-1]
+            dist_start_end = polygon_area_km2([start, end, start])
+            if len(pts) >= 6:
+                # Use path as polygon directly (works for loops)
+                polygon = pts
+                if polygon[0] != polygon[-1]: polygon.append(polygon[0])
+            else:
+                polygon = convex_hull(pts)
 
     if len(polygon) < 3:
         return jsonify({"ok":False,"error":"Could not form polygon"}),400
@@ -528,22 +559,57 @@ def strava_connect():
 
 @app.route("/strava/callback")
 def strava_callback():
-    code = request.args.get("code")
-    uid  = request.args.get("state")
-    if not code or not uid: return "Missing params",400
+    code  = request.args.get("code")
+    if not code: return "Missing code", 400
+
     r = requests.post("https://www.strava.com/oauth/token", data={
-        "client_id": STRAVA_CLIENT_ID, "client_secret": STRAVA_CLIENT_SECRET,
-        "code": code, "grant_type": "authorization_code"
+        "client_id": STRAVA_CLIENT_ID,
+        "client_secret": STRAVA_CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code"
     })
     data = r.json()
-    if "access_token" not in data: return f"Strava error: {data}",400
+    if "access_token" not in data:
+        return f"Strava auth error: {data}", 400
+
+    athlete   = data.get("athlete", {})
+    strava_id = str(athlete.get("id", ""))
+    firstname = athlete.get("firstname", "")
+    lastname  = athlete.get("lastname", "")
+    name      = (firstname + " " + lastname).strip() or "Strava Runner"
+    avatar    = (firstname[:1] + lastname[:1]).upper() or "SR"
+    photo_url = athlete.get("profile_medium","") or athlete.get("profile","")
+    uid       = "strava_" + strava_id
+
     conn = get_db(); c = conn.cursor()
-    name = data["athlete"].get("firstname","") + " " + data["athlete"].get("lastname","")
-    c.execute("UPDATE users SET strava_token=?, name=? WHERE id=?",
-              (data["access_token"], name.strip(), uid))
-    conn.commit(); conn.close()
+
+    # Add photo_url column if not exists
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN photo_url TEXT")
+        conn.commit()
+    except: pass
+
+    existing = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    now = datetime.utcnow().isoformat() + "Z"
+
+    if existing:
+        c.execute(
+            "UPDATE users SET name=?, strava_token=?, avatar=?, photo_url=? WHERE id=?",
+            (name, data["access_token"], avatar, photo_url, uid)
+        )
+    else:
+        count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        color = assign_color(count)
+        c.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
+                  (uid, name, avatar, color, 0.0, 0, data["access_token"], now))
+        c.execute("UPDATE users SET photo_url=? WHERE id=?", (photo_url, uid))
+
+    conn.commit()
+    conn.close()
     session["user_id"] = uid
-    return redirect("/?strava=connected")
+
+    frontend_url = os.getenv("FRONTEND_URL", "https://glittery-hotteok-fb0734.netlify.app")
+    return redirect(frontend_url + "/?uid=" + uid + "&strava=connected")
 
 @app.route("/api/strava/activities")
 def strava_activities():
@@ -570,5 +636,5 @@ def strava_activities():
 init_db()
 
 if __name__ == "__main__":
-    print("TERRA RUN v2 — http://localhost:5000")
+    print("Infinite Me v2 — http://localhost:5000")
     app.run(debug=True, port=5000, host="0.0.0.0")
