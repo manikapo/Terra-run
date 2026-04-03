@@ -342,16 +342,21 @@ def create_territory():
             try:
                 from shapely.geometry import LineString
                 from shapely.ops import unary_union
-                line = LineString([(p[1],p[0]) for p in pts])  # lng,lat for shapely
-                # Buffer by ~20 meters (0.0002 degrees) — visible on map
-                buffered = line.buffer(0.0002, cap_style=2, join_style=2)
+                # Subsample points for cleaner polygon (max 200 pts)
+                step = max(1, len(pts) // 200)
+                sampled = pts[::step]
+                if len(sampled) < 4: sampled = pts
+
+                line = LineString([(p[1],p[0]) for p in sampled])
+                # Buffer by ~30 meters for clear visibility on map
+                buffered = line.buffer(0.0003, cap_style=1, join_style=1)
                 buffered = make_valid(buffered)
+
                 if buffered.is_empty:
                     polygon = convex_hull(pts)
                 elif buffered.geom_type == 'Polygon':
                     polygon = [[c[1],c[0]] for c in buffered.exterior.coords]
                 elif buffered.geom_type == 'MultiPolygon':
-                    # Take the largest piece
                     largest = max(buffered.geoms, key=lambda g: g.area)
                     polygon = [[c[1],c[0]] for c in largest.exterior.coords]
                 else:
@@ -561,6 +566,111 @@ def strava_connect():
            f"?client_id={STRAVA_CLIENT_ID}&response_type=code"
            f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:read_all&state={uid}")
     return redirect(url)
+
+@app.route("/strava/sync")
+def strava_sync():
+    """Fetch recent Strava activities and create territories from them."""
+    uid = get_uid()
+    if not uid: return jsonify({"ok": False, "error": "not logged in"}), 401
+
+    conn = get_db(); c = conn.cursor()
+    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+
+    if not user or not user["strava_token"]:
+        return jsonify({"ok": False, "error": "Strava not connected"}), 400
+
+    # Fetch recent activities from Strava
+    r = requests.get("https://www.strava.com/api/v3/athlete/activities",
+                     headers={"Authorization": f"Bearer {user['strava_token']}"},
+                     params={"per_page": 10, "page": 1})
+    if r.status_code != 200:
+        return jsonify({"ok": False, "error": "Strava API error", "status": r.status_code}), 400
+
+    activities = r.json()
+    synced = []
+    for act in activities:
+        # Only process runs with a map polyline
+        if act.get("type") not in ["Run", "Walk", "Hike"]: continue
+        polyline = act.get("map", {}).get("summary_polyline", "")
+        if not polyline: continue
+
+        # Decode polyline
+        try:
+            pts = decode_polyline(polyline)
+        except:
+            continue
+
+        if len(pts) < 4: continue
+
+        # Check if already synced (by Strava activity ID)
+        act_id = str(act["id"])
+        conn = get_db(); c = conn.cursor()
+        existing = c.execute(
+            "SELECT id FROM territories WHERE name LIKE ?",
+            (f"%strava_{act_id}%",)
+        ).fetchone()
+
+        if existing:
+            conn.close()
+            continue  # Already imported
+
+        # Build polygon from route
+        if SHAPELY_AVAILABLE:
+            try:
+                from shapely.geometry import LineString
+                line = LineString([(p[1],p[0]) for p in pts])
+                buffered = make_valid(line.buffer(0.0003, cap_style=1, join_style=1))
+                if not buffered.is_empty and buffered.geom_type == 'Polygon':
+                    polygon = [[c[1],c[0]] for c in buffered.exterior.coords]
+                else:
+                    polygon = convex_hull(pts)
+            except:
+                polygon = convex_hull(pts)
+        else:
+            polygon = convex_hull(pts)
+
+        area   = round(polygon_area_km2(polygon), 4)
+        tid    = "t_" + uuid.uuid4().hex[:8]
+        name   = act.get("name", "Strava Run") + f" (strava_{act_id})"
+        now    = datetime.utcnow().isoformat() + "Z"
+        color  = user["color"]
+
+        user_row = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
+                  (tid, uid, name, json.dumps(polygon), area, now, color))
+        c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
+                  (round(act.get("distance", 0) / 1000, 2), uid))
+        conn.commit()
+        conn.close()
+        synced.append(act.get("name", "Run"))
+
+    return jsonify({"ok": True, "synced": len(synced), "activities": synced})
+
+
+def decode_polyline(polyline_str):
+    """Decode Google encoded polyline to list of [lat, lng]."""
+    index, lat, lng = 0, 0, 0
+    coordinates = []
+    changes = {"latitude": 0, "longitude": 0}
+    while index < len(polyline_str):
+        for unit in ["latitude", "longitude"]:
+            chunk, shift = 0, 0
+            while True:
+                b = ord(polyline_str[index]) - 63
+                index += 1
+                chunk |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20: break
+            if chunk & 1:
+                changes[unit] = ~(chunk >> 1)
+            else:
+                changes[unit] = chunk >> 1
+        lat += changes["latitude"]
+        lng += changes["longitude"]
+        coordinates.append([lat / 100000.0, lng / 100000.0])
+    return coordinates
+
 
 @app.route("/strava/callback")
 def strava_callback():
