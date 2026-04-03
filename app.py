@@ -343,12 +343,17 @@ def create_territory():
                 from shapely.geometry import LineString
                 from shapely.ops import unary_union
                 line = LineString([(p[1],p[0]) for p in pts])  # lng,lat for shapely
-                # Buffer by ~10 meters (0.0001 degrees approx)
-                buffered = line.buffer(0.0001)
+                # Buffer by ~20 meters (0.0002 degrees) — visible on map
+                buffered = line.buffer(0.0002, cap_style=2, join_style=2)
                 buffered = make_valid(buffered)
-                if not buffered.is_empty and buffered.geom_type == 'Polygon':
-                    # Convert back to lat,lng
+                if buffered.is_empty:
+                    polygon = convex_hull(pts)
+                elif buffered.geom_type == 'Polygon':
                     polygon = [[c[1],c[0]] for c in buffered.exterior.coords]
+                elif buffered.geom_type == 'MultiPolygon':
+                    # Take the largest piece
+                    largest = max(buffered.geoms, key=lambda g: g.area)
+                    polygon = [[c[1],c[0]] for c in largest.exterior.coords]
                 else:
                     polygon = convex_hull(pts)
             except Exception as e:
