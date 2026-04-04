@@ -333,6 +333,9 @@
       <button class="strava-btn" id="strava-sync-btn" onclick="syncStrava()" style="display:none;background:var(--surface);border:1px solid var(--accent);color:var(--accent);margin-top:8px;">
         <span>🔄</span> Sync Strava Runs → Territory
       </button>
+      <button class="strava-btn" id="strava-disconnect-btn" onclick="disconnectStrava()" style="display:none;background:var(--surface);border:1px solid #ff4444;color:#ff4444;margin-top:8px;">
+        <span>🔌</span> Disconnect Strava
+      </button>
       <label class="strava-btn" style="background:var(--surface);border:1px solid var(--border);cursor:pointer;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px;">
         <span>📂</span> Upload GPX File
         <input type="file" id="gpx-upload" accept=".gpx" style="display:none;" onchange="handleGPXUpload(event)"/>
@@ -698,6 +701,7 @@ function toggleRun() {
 function startRun() {
   if (!currentUser) { toast('Please login first to track your run!', 'warn'); return; }
   if (!navigator.geolocation) { toast('GPS not available in this browser', 'error'); return; }
+  if (window.closingLine) { map.removeLayer(window.closingLine); window.closingLine = null; }
   isRunning      = true;
   isPaused       = false;
   gpsPoints      = [];
@@ -752,6 +756,16 @@ function stopRun() {
     toast('Run stopped. Need more GPS points to claim.', 'warn');
     wasSimMode = false;
     if (myPathLine) { map.removeLayer(myPathLine); myPathLine = null; }
+  // Draw dashed closing line from last point back to start
+  if (gpsPoints.length >= 2) {
+    if (window.closingLine) { map.removeLayer(window.closingLine); }
+    window.closingLine = L.polyline(
+      [gpsPoints[gpsPoints.length-1], gpsPoints[0]],
+      { color: currentUser ? currentUser.color : '#00ff88',
+        weight: 2, opacity: 0.7,
+        dashArray: '8, 8' }
+    ).addTo(map);
+  }
     clearSimDots();
     document.getElementById('sim-count').classList.remove('show');
   }
@@ -893,8 +907,16 @@ async function claimTerritory() {
     toast(r.message || 'Territory claimed!', r.stolen_from && r.stolen_from.length ? 'warn' : 'success');
     wasSimMode = false;
     if (myPathLine) { map.removeLayer(myPathLine); myPathLine = null; }
+    if (window.closingLine) { map.removeLayer(window.closingLine); window.closingLine = null; }
     clearSimDots();
     document.getElementById('sim-count').classList.remove('show');
+    // Zoom map to fit the claimed territory
+    if (r.territory && r.territory.polygon && r.territory.polygon.length > 0) {
+      try {
+        var bounds = L.latLngBounds(r.territory.polygon.map(function(p){ return [p[0],p[1]]; }));
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+      } catch(e) {}
+    }
     gpsPoints = [];
     isRunning = false;
     if (runTimer) { clearInterval(runTimer); runTimer = null; }
@@ -1004,6 +1026,24 @@ function connectStrava() {
     return;
   }
   window.location.href = API + '/strava/connect';
+}
+
+async function disconnectStrava() {
+  if (!currentUser) return;
+  if (!confirm('Disconnect Strava? Your territories will stay but runs won\'t sync automatically.')) return;
+  var r = await apiFetch('/strava/disconnect', 'POST');
+  if (r && r.ok) {
+    toast('Strava disconnected', 'success');
+    document.getElementById('strava-disconnect-btn').style.display = 'none';
+    document.getElementById('strava-sync-btn').style.display = 'none';
+    document.getElementById('strava-status').style.display = 'none';
+    document.getElementById('strava-btn').style.display = 'flex';
+    // Update local user
+    currentUser.strava_token = null;
+    localStorage.setItem('terra_name', currentUser.name);
+  } else {
+    toast('Failed to disconnect: ' + (r ? r.error : 'Server error'), 'error');
+  }
 }
 
 async function syncStrava() {
