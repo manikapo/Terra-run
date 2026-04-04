@@ -342,10 +342,14 @@ def create_territory():
         return jsonify({"ok":False,"error":"Need at least 4 GPS points"}),400
 
     # Build polygon from GPS path
+    pts = [[float(p[0]),float(p[1])] for p in gps]
+    sampled = pts  # for gps_path storage
+
     if sim_mode:
-        # Sim mode — use exact clicked points
-        polygon = [[float(p[0]),float(p[1])] for p in gps]
-        if polygon[0] != polygon[-1]: polygon.append(polygon[0])
+        # Sim mode — INTVL style same as real GPS
+        # Path from first to last clicked point + straight closing line
+        sampled = pts
+        polygon = pts + [pts[0]]  # close polygon
     else:
         # Real GPS run — INTVL style:
         # Use the actual run path + straight dashed closing line
