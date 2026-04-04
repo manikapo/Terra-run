@@ -1080,11 +1080,12 @@ function showPage(page) {
 async function apiFetch(path, method, body) {
   method = method || 'GET';
   try {
-    var headers = { 'Content-Type': 'application/json' };
     var storedUid = localStorage.getItem('terra_uid');
-    // Inject uid into every request body so server always knows who we are
+    var headers = { 'Content-Type': 'application/json' };
+    // Always send uid as header — most reliable method
+    if (storedUid) headers['X-User-Id'] = storedUid;
+    // Also inject into body and query param as fallback
     if (storedUid && body) body._uid = storedUid;
-    // Also send as query param for GET requests
     var url = API + path;
     if (storedUid && method === 'GET') url += (url.indexOf('?') >= 0 ? '&' : '?') + '_uid=' + storedUid;
     var opts = { method: method, credentials: 'include', headers: headers };
@@ -1378,41 +1379,61 @@ function renderTerritories(data) {
     var avatar = t.owner_avatar || (t.owner_name ? t.owner_name.slice(0,2).toUpperCase() : '??');
     var ownerName = t.owner_name || 'Unknown';
 
-    // Draw filled territory polygon
+    // INTVL style rendering:
+    // 1. Filled polygon (territory area, no border)
     var poly = L.polygon(t.polygon, {
-      color: color,
+      color: 'transparent',
       fillColor: color,
       fillOpacity: isMe ? 0.35 : 0.2,
-      weight: 0,  // no border on polygon — we draw lines separately
-      terraId: t.id,
-      terraUid: t.user_id
+      weight: 0
     });
     poly.on('click', function() { showZonePopup(t); });
     poly.addTo(territoriesLayer);
 
-    // Draw run path + dashed closing line (INTVL style)
     if (t.gps_path && t.gps_path.length >= 2) {
       var path = t.gps_path;
-      // Solid line = actual run path
+      var startPt = path[0];
+      var endPt   = path[path.length - 1];
+
+      // 2. Solid line = exact GPS run path
       L.polyline(path, {
         color: color,
-        weight: isMe ? 3 : 2,
-        opacity: 0.95
+        weight: isMe ? 3.5 : 2.5,
+        opacity: 1
       }).addTo(territoriesLayer);
-      // Dashed line = straight closing line from end back to start
-      L.polyline([path[path.length-1], path[0]], {
+
+      // 3. Dashed line = straight closing line B → A
+      L.polyline([endPt, startPt], {
         color: color,
-        weight: isMe ? 2 : 1.5,
-        opacity: 0.7,
-        dashArray: '8, 6'
+        weight: isMe ? 2.5 : 2,
+        opacity: 0.85,
+        dashArray: '10, 7'
       }).addTo(territoriesLayer);
+
+      // 4. Start point circle (A)
+      L.circleMarker(startPt, {
+        radius: 6,
+        color: '#fff',
+        fillColor: color,
+        fillOpacity: 1,
+        weight: 2
+      }).addTo(territoriesLayer);
+
+      // 5. End point circle (B)
+      L.circleMarker(endPt, {
+        radius: 6,
+        color: '#fff',
+        fillColor: color,
+        fillOpacity: 1,
+        weight: 2
+      }).addTo(territoriesLayer);
+
     } else {
-      // No path data — just draw polygon border normally
+      // Legacy territory — plain polygon border
       L.polygon(t.polygon, {
         color: color,
         fillOpacity: 0,
-        weight: isMe ? 2.5 : 1.5,
-        opacity: 0.9
+        weight: isMe ? 2.5 : 1.5
       }).addTo(territoriesLayer);
     }
 
