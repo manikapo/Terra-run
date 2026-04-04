@@ -333,47 +333,32 @@ def create_territory():
         polygon = [[float(p[0]),float(p[1])] for p in gps]
         if polygon[0] != polygon[-1]: polygon.append(polygon[0])
     else:
-        # Real GPS run — build polygon from actual path
-        # If path forms a loop (start ~= end), use the path directly
-        # Otherwise create a buffer polygon around the path
+        # Real GPS run — INTVL style:
+        # Use the actual run path + straight dashed closing line
+        # This creates a polygon that exactly matches the run shape
         pts = [[float(p[0]),float(p[1])] for p in gps]
 
+        # Subsample for cleaner polygon (max 300 points)
+        step = max(1, len(pts) // 300)
+        sampled = pts[::step]
+        if sampled[-1] != pts[-1]:
+            sampled.append(pts[-1])  # always include last point
+
+        # Close the polygon: run path forward + straight line back to start
+        # This is exactly what INTVL does — the dashed line IS the closing edge
+        polygon = sampled + [sampled[0]]  # close back to start
+
+        # Validate with Shapely if available
         if SHAPELY_AVAILABLE:
             try:
-                from shapely.geometry import LineString
-                from shapely.ops import unary_union
-                # Subsample points for cleaner polygon (max 200 pts)
-                step = max(1, len(pts) // 200)
-                sampled = pts[::step]
-                if len(sampled) < 4: sampled = pts
-
-                line = LineString([(p[1],p[0]) for p in sampled])
-                # Buffer by ~30 meters for clear visibility on map
-                buffered = line.buffer(0.0003, cap_style=1, join_style=1)
-                buffered = make_valid(buffered)
-
-                if buffered.is_empty:
-                    polygon = convex_hull(pts)
-                elif buffered.geom_type == 'Polygon':
-                    polygon = [[c[1],c[0]] for c in buffered.exterior.coords]
-                elif buffered.geom_type == 'MultiPolygon':
-                    largest = max(buffered.geoms, key=lambda g: g.area)
-                    polygon = [[c[1],c[0]] for c in largest.exterior.coords]
-                else:
-                    polygon = convex_hull(pts)
+                from shapely.geometry import Polygon as ShapelyPoly
+                sp = make_valid(ShapelyPoly([(p[1],p[0]) for p in polygon]))
+                if not sp.is_empty and sp.area > 0:
+                    # Use Shapely-validated polygon
+                    polygon = [[c[1],c[0]] for c in sp.exterior.coords]
+                # else keep the raw polygon
             except Exception as e:
-                print("Buffer error:", e)
-                polygon = convex_hull(pts)
-        else:
-            # No Shapely — check if it's a loop
-            start = pts[0]; end = pts[-1]
-            dist_start_end = polygon_area_km2([start, end, start])
-            if len(pts) >= 6:
-                # Use path as polygon directly (works for loops)
-                polygon = pts
-                if polygon[0] != polygon[-1]: polygon.append(polygon[0])
-            else:
-                polygon = convex_hull(pts)
+                print("Shapely validation error:", e)
 
     if len(polygon) < 3:
         return jsonify({"ok":False,"error":"Could not form polygon"}),400
@@ -566,6 +551,16 @@ def strava_connect():
            f"?client_id={STRAVA_CLIENT_ID}&response_type=code"
            f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:read_all&state={uid}")
     return redirect(url)
+
+@app.route("/strava/disconnect", methods=["POST"])
+def strava_disconnect():
+    uid = get_uid()
+    if not uid: return jsonify({"ok": False, "error": "not logged in"}), 401
+    conn = get_db(); c = conn.cursor()
+    c.execute("UPDATE users SET strava_token=NULL WHERE id=?", (uid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "message": "Strava disconnected"})
+
 
 @app.route("/strava/sync")
 def strava_sync():
