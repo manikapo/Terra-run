@@ -442,8 +442,17 @@ def create_territory():
     tid  = "t_" + uuid.uuid4().hex[:8]
     now  = datetime.utcnow().isoformat()+"Z"
     color = user["color"]
+    # Store original GPS path for rendering run path vs closing line
+    gps_path_json = json.dumps(sampled) if not sim_mode else json.dumps(polygon)
+    try:
+        c.execute("ALTER TABLE territories ADD COLUMN gps_path TEXT")
+        conn.commit()
+    except: pass
     c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
               (tid, uid, name, json.dumps(polygon), round(area,4), now, color))
+    try:
+        c.execute("UPDATE territories SET gps_path=? WHERE id=?", (gps_path_json, tid))
+    except: pass
 
     # Update user stats
     c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
@@ -462,6 +471,7 @@ def create_territory():
     return jsonify({
         "ok": True,
         "territory": {"id":tid,"user_id":uid,"name":name,"polygon":polygon,
+                      "gps_path":sampled if not sim_mode else polygon,
                       "area_km2":round(area,4),"captured_at":now,"color":color,
                       "owner_name":updated_user["name"]},
         "stolen_from": stolen_names,
