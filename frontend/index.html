@@ -429,12 +429,25 @@ window.addEventListener('load', () => {
   var savedName = localStorage.getItem('terra_name');
   var savedUid  = localStorage.getItem('terra_uid');
   if (savedName && savedUid) {
-    apiFetch('/api/me').then(function(r) {
-      if (r.ok) {
+    // Use guest-login with saved name to restore session on server
+    // This ensures server knows who we are even after restart
+    apiFetch('/api/guest-login', 'POST', {
+      name: savedName,
+      uid: savedUid,
+      _uid: savedUid
+    }).then(function(r) {
+      if (r && r.ok) {
         currentUser = r.user;
+        localStorage.setItem('terra_uid', currentUser.id);
         document.getElementById('login-screen').classList.add('hidden');
         updateUserUI();
         loadTerritories();
+        if (currentUser.id && currentUser.id.startsWith('strava_')) {
+          document.getElementById('strava-status').style.display = 'block';
+          document.getElementById('strava-sync-btn').style.display = 'flex';
+          document.getElementById('strava-disconnect-btn').style.display = 'flex';
+          document.getElementById('strava-btn').style.display = 'none';
+        }
       } else {
         localStorage.removeItem('terra_uid');
         localStorage.removeItem('terra_name');
@@ -897,7 +910,29 @@ function isValidGpsPoint(newPt, lastPt, accuracy) {
 
 // ── Territory Claim ───────────────────────────────────────────────────────────
 async function claimTerritory() {
-  if (!currentUser) { toast('Login first', 'warn'); return; }
+  // Try to restore session if currentUser is null but localStorage has uid
+  if (!currentUser) {
+    var savedUid = localStorage.getItem('terra_uid');
+    var savedName = localStorage.getItem('terra_name');
+    if (savedUid && savedName) {
+      toast('Restoring session...', 'warn');
+      var r = await apiFetch('/api/guest-login', 'POST', {
+        name: savedName, uid: savedUid, _uid: savedUid
+      });
+      if (r && r.ok) {
+        currentUser = r.user;
+        updateUserUI();
+      } else {
+        toast('Please login first', 'warn');
+        document.getElementById('login-screen').classList.remove('hidden');
+        return;
+      }
+    } else {
+      toast('Please login first', 'warn');
+      document.getElementById('login-screen').classList.remove('hidden');
+      return;
+    }
+  }
   if (gpsPoints.length < 4) { toast('Need at least 4 GPS points. Click more spots!', 'warn'); return; }
   var name = prompt('Name your territory:', currentUser.name.split(' ')[0] + "'s Zone");
   if (!name) return;
