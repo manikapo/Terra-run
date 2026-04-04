@@ -1378,18 +1378,43 @@ function renderTerritories(data) {
     var avatar = t.owner_avatar || (t.owner_name ? t.owner_name.slice(0,2).toUpperCase() : '??');
     var ownerName = t.owner_name || 'Unknown';
 
-    // Draw territory polygon
+    // Draw filled territory polygon
     var poly = L.polygon(t.polygon, {
       color: color,
       fillColor: color,
       fillOpacity: isMe ? 0.35 : 0.2,
-      weight: isMe ? 2.5 : 1.5,
-      opacity: 0.9,
+      weight: 0,  // no border on polygon — we draw lines separately
       terraId: t.id,
       terraUid: t.user_id
     });
     poly.on('click', function() { showZonePopup(t); });
     poly.addTo(territoriesLayer);
+
+    // Draw run path + dashed closing line (INTVL style)
+    if (t.gps_path && t.gps_path.length >= 2) {
+      var path = t.gps_path;
+      // Solid line = actual run path
+      L.polyline(path, {
+        color: color,
+        weight: isMe ? 3 : 2,
+        opacity: 0.95
+      }).addTo(territoriesLayer);
+      // Dashed line = straight closing line from end back to start
+      L.polyline([path[path.length-1], path[0]], {
+        color: color,
+        weight: isMe ? 2 : 1.5,
+        opacity: 0.7,
+        dashArray: '8, 6'
+      }).addTo(territoriesLayer);
+    } else {
+      // No path data — just draw polygon border normally
+      L.polygon(t.polygon, {
+        color: color,
+        fillOpacity: 0,
+        weight: isMe ? 2.5 : 1.5,
+        opacity: 0.9
+      }).addTo(territoriesLayer);
+    }
 
     // Add avatar label at center of zone
     var center = getPolygonCenter(t.polygon);
