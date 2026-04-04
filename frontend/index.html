@@ -573,19 +573,41 @@ function addSimPoint(lat, lng) {
 }
 
 function updateSimPreview() {
+  // Clear previous preview layers
   if (simPreviewPoly) { map.removeLayer(simPreviewPoly); simPreviewPoly = null; }
-  if (gpsPoints.length < 3) return;
-  // Close the polygon for preview
-  var previewPts = gpsPoints.slice();
-  previewPts.push(previewPts[0]);
-  simPreviewPoly = L.polygon(previewPts, {
-    color: currentUser.color,
-    fillColor: currentUser.color,
-    fillOpacity: 0.15,
-    weight: 1.5,
-    opacity: 0.6,
-    dashArray: '6 4'
+  if (window.simPreviewPath) { map.removeLayer(window.simPreviewPath); window.simPreviewPath = null; }
+  if (window.simPreviewClose) { map.removeLayer(window.simPreviewClose); window.simPreviewClose = null; }
+  if (gpsPoints.length < 2) return;
+
+  var color = currentUser.color;
+  var pts = gpsPoints;
+
+  // Filled territory preview
+  if (pts.length >= 3) {
+    simPreviewPoly = L.polygon(pts.concat([pts[0]]), {
+      color: 'transparent',
+      fillColor: color,
+      fillOpacity: 0.15,
+      weight: 0
+    }).addTo(map);
+  }
+
+  // Solid path line (your clicks so far)
+  window.simPreviewPath = L.polyline(pts, {
+    color: color,
+    weight: 2.5,
+    opacity: 0.9
   }).addTo(map);
+
+  // Dashed closing line (last point back to first)
+  if (pts.length >= 2) {
+    window.simPreviewClose = L.polyline([pts[pts.length-1], pts[0]], {
+      color: color,
+      weight: 2,
+      opacity: 0.6,
+      dashArray: '10, 7'
+    }).addTo(map);
+  }
 }
 
 function updateSimCounter() {
