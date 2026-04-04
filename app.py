@@ -273,8 +273,22 @@ def get_uid():
 def guest_login():
     data = request.json or {}
     name = data.get("name","Runner").strip() or "Runner"
-    uid  = "u_" + hashlib.md5(name.lower().encode()).hexdigest()[:10]
+    
+    # If client sends existing uid, try to restore that session first
+    existing_uid = data.get("uid") or data.get("_uid")
+    
     conn = get_db(); c = conn.cursor()
+    
+    # Try to find user by existing uid first
+    if existing_uid:
+        user = c.execute("SELECT * FROM users WHERE id=?", (existing_uid,)).fetchone()
+        if user:
+            conn.close()
+            session["user_id"] = existing_uid
+            return jsonify({"ok": True, "user": dict(user)})
+    
+    # Otherwise create/find by name hash
+    uid = "u_" + hashlib.md5(name.lower().encode()).hexdigest()[:10]
     user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     if not user:
         count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
