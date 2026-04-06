@@ -316,8 +316,14 @@ def me():
 @app.route("/api/territories")
 def get_territories():
     conn = get_db()
+    # Ensure gps_path column exists
+    try:
+        conn.execute("ALTER TABLE territories ADD COLUMN gps_path TEXT")
+        conn.commit()
+    except: pass
     rows = conn.execute("""
-        SELECT t.*, u.name as owner_name, u.avatar as owner_avatar
+        SELECT t.*, u.name as owner_name, u.avatar as owner_avatar,
+               COALESCE(u.photo_url,'') as owner_photo
         FROM territories t LEFT JOIN users u ON t.user_id = u.id
     """).fetchall()
     conn.close()
@@ -325,6 +331,13 @@ def get_territories():
     for r in rows:
         d = dict(r)
         d["polygon"] = json.loads(d["polygon"])
+        if d.get("gps_path"):
+            try:
+                d["gps_path"] = json.loads(d["gps_path"])
+            except:
+                d["gps_path"] = None
+        else:
+            d["gps_path"] = None
         result.append(d)
     return jsonify(result)
 
