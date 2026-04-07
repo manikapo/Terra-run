@@ -5,7 +5,6 @@ pip install flask flask-cors requests python-dotenv gunicorn shapely
 """
 
 from flask import Flask, jsonify, request, redirect, session
-from flask_cors import CORS
 import json, math, os, uuid, hashlib, sqlite3
 from datetime import datetime
 import requests
@@ -808,5 +807,6 @@ def strava_activities():
 init_db()
 
 if __name__ == "__main__":
-    print("Infinite Me v2 — http://localhost:5000")
-    app.run(debug=True, port=5000, host="0.0.0.0")
+    port = int(os.getenv("PORT", 5000))
+    print(f"Infinite Me v2 — http://0.0.0.0:{port}")
+    app.run(debug=False, port=port, host="0.0.0.0")
