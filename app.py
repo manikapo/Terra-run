@@ -22,33 +22,52 @@ except ImportError:
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "terra-run-secret-change-in-prod")
 
-# Cookie settings for cross-domain (Netlify frontend → Railway backend)
+# Cookie settings for cross-domain
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
-# Disable flask-cors and handle CORS manually for full control
+# Allowed origins — add any new frontend URLs here
+ALLOWED_ORIGINS = [
+    "https://play.8me.in",
+    "http://play.8me.in",
+    "https://8me.in",
+    "http://8me.in",
+    "https://web-production-4077c.up.railway.app",
+    "http://localhost:5500",
+    "http://localhost:3000",
+    "http://127.0.0.1:5500",
+]
+
+def get_cors_origin(request_origin):
+    """Return the origin if allowed, else the primary frontend."""
+    if request_origin and request_origin in ALLOWED_ORIGINS:
+        return request_origin
+    return "https://play.8me.in"
+
 @app.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
         res = app.make_response("")
-        origin = request.headers.get("Origin", "*")
+        origin = get_cors_origin(request.headers.get("Origin"))
         res.headers["Access-Control-Allow-Origin"]      = origin
         res.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept"
         res.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
         res.headers["Access-Control-Allow-Credentials"] = "true"
         res.headers["Access-Control-Max-Age"]           = "3600"
+        res.headers["Vary"]                             = "Origin"
         res.status_code = 204
         return res
 
 @app.after_request
 def after_request(response):
-    origin = request.headers.get("Origin", "*")
-    response.headers["Access-Control-Allow-Origin"]  = origin
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,X-User-Id,Authorization,Accept"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    origin = get_cors_origin(request.headers.get("Origin"))
+    response.headers["Access-Control-Allow-Origin"]      = origin
+    response.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept"
+    response.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
     response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Max-Age"] = "3600"
+    response.headers["Access-Control-Max-Age"]           = "3600"
+    response.headers["Vary"]                             = "Origin"
     return response
 
 
