@@ -587,10 +587,12 @@ def whoami():
 @app.route("/strava/connect")
 def strava_connect():
     uid = get_uid()
-    if not uid: return jsonify({"error":"Login first"}),401
+    # No login required — uid passed via query param or session
+    # If none, use "new" and the callback will create the user fresh
+    state = uid or "new"
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={STRAVA_CLIENT_ID}&response_type=code"
-           f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:read_all&state={uid}")
+           f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:read_all&state={state}")
     return redirect(url)
 
 @app.route("/strava/disconnect", methods=["POST"])
