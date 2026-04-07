@@ -759,7 +759,7 @@ def strava_callback():
     conn.close()
     session["user_id"] = uid
 
-    frontend_url = os.getenv("FRONTEND_URL", "https://glittery-hotteok-fb0734.netlify.app")
+    frontend_url = os.getenv("FRONTEND_URL", "https://play.8me.in")
     return redirect(frontend_url + "/?uid=" + uid + "&strava=connected")
 
 @app.route("/api/strava/activities")
