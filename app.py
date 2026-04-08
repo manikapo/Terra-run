@@ -334,11 +334,12 @@ def me():
 @app.route("/api/territories")
 def get_territories():
     conn = get_db()
-    # Ensure gps_path column exists
-    try:
-        conn.execute("ALTER TABLE territories ADD COLUMN gps_path TEXT")
-        conn.commit()
-    except: pass
+    # Ensure extra columns exist
+    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT", "duration TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+            conn.commit()
+        except: pass
     rows = conn.execute("""
         SELECT t.*, u.name as owner_name, u.avatar as owner_avatar,
                COALESCE(u.photo_url,'') as owner_photo
@@ -350,10 +351,8 @@ def get_territories():
         d = dict(r)
         d["polygon"] = json.loads(d["polygon"])
         if d.get("gps_path"):
-            try:
-                d["gps_path"] = json.loads(d["gps_path"])
-            except:
-                d["gps_path"] = None
+            try: d["gps_path"] = json.loads(d["gps_path"])
+            except: d["gps_path"] = None
         else:
             d["gps_path"] = None
         result.append(d)
@@ -488,20 +487,23 @@ def create_territory():
     )
 
     # Insert new territory
-    tid  = "t_" + uuid.uuid4().hex[:8]
-    now  = datetime.utcnow().isoformat()+"Z"
+    tid   = "t_" + uuid.uuid4().hex[:8]
+    now   = datetime.utcnow().isoformat()+"Z"
     color = user["color"]
-    # Store original GPS path for rendering run path vs closing line
     gps_path_json = json.dumps(sampled) if not sim_mode else json.dumps(polygon)
-    try:
-        c.execute("ALTER TABLE territories ADD COLUMN gps_path TEXT")
-        conn.commit()
-    except: pass
+    # Run stats from frontend
+    run_km    = round(data.get("total_km", dist), 2)
+    avg_pace  = data.get("avg_pace", None)
+    duration  = data.get("duration", None)
+    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT", "duration TEXT"]:
+        try:
+            c.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+            conn.commit()
+        except: pass
     c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
               (tid, uid, name, json.dumps(polygon), round(area,4), now, color))
-    try:
-        c.execute("UPDATE territories SET gps_path=? WHERE id=?", (gps_path_json, tid))
-    except: pass
+    c.execute("UPDATE territories SET gps_path=?, total_km=?, avg_pace=?, duration=? WHERE id=?",
+              (gps_path_json, run_km, avg_pace, duration, tid))
 
     # Update user stats
     c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
@@ -586,6 +588,29 @@ def ping():
         "data_dir_exists": dir_exists,
         "cwd": os.getcwd()
     })
+
+@app.route("/test")
+def test():
+    """Browser-friendly test — open this URL directly to verify server + env vars."""
+    strava_id  = STRAVA_CLIENT_ID
+    strava_ok  = strava_id not in ("", "YOUR_STRAVA_CLIENT_ID")
+    redirect_uri = STRAVA_REDIRECT_URI
+    frontend   = os.getenv("FRONTEND_URL", "NOT SET")
+    origin     = request.headers.get("Origin", "no origin header")
+    return f"""
+    <h2>✅ Infinite Me server is running</h2>
+    <table border=1 cellpadding=8>
+      <tr><td>STRAVA_CLIENT_ID set</td><td>{"✅ yes" if strava_ok else "❌ NO — missing!"}</td></tr>
+      <tr><td>STRAVA_CLIENT_SECRET set</td><td>{"✅ yes" if os.getenv("STRAVA_CLIENT_SECRET") else "❌ NO — missing!"}</td></tr>
+      <tr><td>STRAVA_REDIRECT_URI</td><td>{redirect_uri}</td></tr>
+      <tr><td>FRONTEND_URL</td><td>{frontend}</td></tr>
+      <tr><td>DB_PATH</td><td>{DB_PATH}</td></tr>
+      <tr><td>DB exists</td><td>{"✅ yes" if os.path.exists(DB_PATH) else "❌ no"}</td></tr>
+      <tr><td>Request Origin</td><td>{origin}</td></tr>
+      <tr><td>PORT</td><td>{os.getenv("PORT","not set")}</td></tr>
+    </table>
+    <br><a href="/ping">→ /ping (JSON)</a>
+    """
 
 @app.route("/api/debug/whoami", methods=["GET","OPTIONS"])
 def whoami():
