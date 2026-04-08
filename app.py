@@ -335,7 +335,8 @@ def me():
 def get_territories():
     conn = get_db()
     # Ensure extra columns exist
-    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT", "duration TEXT"]:
+    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT",
+                "duration TEXT", "straight_km REAL"]:
         try:
             conn.execute(f"ALTER TABLE territories ADD COLUMN {col}")
             conn.commit()
@@ -486,24 +487,40 @@ def create_territory():
         for i in range(1,len(gps))
     )
 
-    # Insert new territory
+    # Insert new territory — explicit columns so ALTER TABLE additions don't break it
     tid   = "t_" + uuid.uuid4().hex[:8]
     now   = datetime.utcnow().isoformat()+"Z"
     color = user["color"]
     gps_path_json = json.dumps(sampled) if not sim_mode else json.dumps(polygon)
     # Run stats from frontend
-    run_km    = round(data.get("total_km", dist), 2)
-    avg_pace  = data.get("avg_pace", None)
-    duration  = data.get("duration", None)
-    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT", "duration TEXT"]:
+    run_km        = round(data.get("total_km", dist), 2)
+    avg_pace      = data.get("avg_pace", None)
+    duration      = data.get("duration", None)
+    # Straight-line distance: start point → end point
+    if len(gps) >= 2:
+        import math as _math
+        lat1,lon1 = math.radians(gps[0][0]),math.radians(gps[0][1])
+        lat2,lon2 = math.radians(gps[-1][0]),math.radians(gps[-1][1])
+        dlat = lat2-lat1; dlon = lon2-lon1
+        a_ = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
+        straight_km = round(6371*2*math.atan2(math.sqrt(a_),math.sqrt(1-a_)), 3)
+    else:
+        straight_km = 0.0
+
+    # Ensure extra columns exist
+    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT",
+                "duration TEXT", "straight_km REAL"]:
         try:
             c.execute(f"ALTER TABLE territories ADD COLUMN {col}")
             conn.commit()
         except: pass
-    c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
-              (tid, uid, name, json.dumps(polygon), round(area,4), now, color))
-    c.execute("UPDATE territories SET gps_path=?, total_km=?, avg_pace=?, duration=? WHERE id=?",
-              (gps_path_json, run_km, avg_pace, duration, tid))
+
+    c.execute("""INSERT INTO territories
+                 (id, user_id, name, polygon, area_km2, captured_at, color,
+                  gps_path, total_km, avg_pace, duration, straight_km)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (tid, uid, name, json.dumps(polygon), round(area,4), now, color,
+               gps_path_json, run_km, avg_pace, duration, straight_km))
 
     # Update user stats
     c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
@@ -524,7 +541,9 @@ def create_territory():
         "territory": {"id":tid,"user_id":uid,"name":name,"polygon":polygon,
                       "gps_path":sampled if not sim_mode else polygon,
                       "area_km2":round(area,4),"captured_at":now,"color":color,
-                      "owner_name":updated_user["name"]},
+                      "owner_name":updated_user["name"],
+                      "total_km":run_km,"avg_pace":avg_pace,
+                      "duration":duration,"straight_km":straight_km},
         "stolen_from": stolen_names,
         "message": msg,
         "user": dict(updated_user)
