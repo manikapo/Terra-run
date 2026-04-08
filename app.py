@@ -361,6 +361,7 @@ def get_territories():
 
 @app.route("/api/territories", methods=["POST"])
 def create_territory():
+  try:
     uid = get_uid()
     if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
 
@@ -457,7 +458,9 @@ def create_territory():
                 for extra in remaining_polys[1:]:
                     if polygon_area_km2(extra) > 0.0001:
                         extra_tid = "t_" + uuid.uuid4().hex[:8]
-                        c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
+                        c.execute("""INSERT INTO territories
+                                     (id, user_id, name, polygon, area_km2, captured_at, color)
+                                     VALUES (?,?,?,?,?,?,?)""",
                                   (extra_tid, t["user_id"], t["name"]+" (part)",
                                    json.dumps(extra),
                                    round(polygon_area_km2(extra), 4),
@@ -548,6 +551,10 @@ def create_territory():
         "message": msg,
         "user": dict(updated_user)
     })
+  except Exception as e:
+    import traceback
+    print("create_territory ERROR:", traceback.format_exc())
+    return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/territories/<tid>", methods=["DELETE"])
 def delete_territory(tid):
