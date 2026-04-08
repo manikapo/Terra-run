@@ -125,42 +125,7 @@ def init_db():
     );
     """)
 
-    # Seed demo users only if table is empty
-    count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    if count == 0:
-        demo_users = [
-            ("u1","Arjun Sharma","AS","#00ff88",142.3,7),
-            ("u2","Priya Mehta","PM","#ff6b35",98.7,5),
-            ("u3","Rohan Verma","RV","#00cfff",211.0,12),
-            ("u4","Sneha Kapoor","SK","#ff3cac",76.4,3),
-            ("u5","Dev Patel","DP","#ffd700",305.8,18),
-        ]
-        now = datetime.utcnow().isoformat() + "Z"
-        for uid,name,av,color,km,zones in demo_users:
-            c.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
-                      (uid,name,av,color,km,zones,None,now))
-
-        demo_territories = [
-            ("t1","u5","Connaught Place Loop",
-             [[28.6328,77.2197],[28.6358,77.2227],[28.6338,77.2257],[28.6308,77.2237],[28.6298,77.2207]],
-             0.42,"2025-03-28T06:12:00Z","#ffd700"),
-            ("t2","u3","India Gate Circuit",
-             [[28.6129,77.2295],[28.6159,77.2335],[28.6139,77.2375],[28.6109,77.2345],[28.6099,77.2305]],
-             0.61,"2025-03-29T05:45:00Z","#00cfff"),
-            ("t3","u1","Lodhi Garden Route",
-             [[28.5934,77.2198],[28.5964,77.2238],[28.5944,77.2268],[28.5914,77.2238],[28.5904,77.2208]],
-             0.38,"2025-03-30T06:00:00Z","#00ff88"),
-            ("t4","u2","Humayun's Tomb Run",
-             [[28.5933,77.2507],[28.5963,77.2547],[28.5943,77.2577],[28.5913,77.2547],[28.5903,77.2517]],
-             0.29,"2025-03-30T07:30:00Z","#ff6b35"),
-            ("t5","u5","Nehru Place Sprint",
-             [[28.5491,77.2534],[28.5521,77.2564],[28.5501,77.2594],[28.5471,77.2564],[28.5461,77.2534]],
-             0.51,"2025-03-27T06:00:00Z","#ffd700"),
-        ]
-        for tid,uid,name,poly,area,cap,color in demo_territories:
-            c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
-                      (tid,uid,name,json.dumps(poly),area,cap,color))
-
+    # No demo seed — start clean for real users
     conn.commit()
     conn.close()
     print("Infinite Me — Database ready:", DB_PATH)
@@ -646,6 +611,25 @@ def whoami():
                         "session":dict(session),
                         "header":request.headers.get("X-User-Id"),
                         "param":request.args.get("_uid")})
+    conn = get_db()
+    user = conn.execute("SELECT id,name,color,zones FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    return jsonify({"uid":uid,"found":bool(user),
+                    "user":dict(user) if user else None})
+
+@app.route("/api/admin/clear-demo")
+def clear_demo():
+    """Remove demo seed data. Visit once to clean the DB."""
+    demo_uids = ['u1','u2','u3','u4','u5']
+    demo_tids = ['t1','t2','t3','t4','t5']
+    conn = get_db(); c = conn.cursor()
+    for uid in demo_uids:
+        c.execute("DELETE FROM users WHERE id=?", (uid,))
+    for tid in demo_tids:
+        c.execute("DELETE FROM territories WHERE id=?", (tid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "message": "Demo data removed"})
     conn = get_db()
     user = conn.execute("SELECT id,name,color,zones FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
