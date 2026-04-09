@@ -298,228 +298,221 @@ def me():
 # ── Territories ───────────────────────────────────────────────────────────────
 @app.route("/api/territories")
 def get_territories():
-    conn = get_db()
-    # Ensure extra columns exist
-    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT",
-                "duration TEXT", "straight_km REAL"]:
+    try:
+        conn = get_db()
+        # Ensure all extra columns exist
+        for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT",
+                    "duration TEXT", "straight_km REAL", "photo_url TEXT"]:
+            try:
+                conn.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+                conn.commit()
+            except: pass
+        # Ensure photo_url exists on users too
         try:
-            conn.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+            conn.execute("ALTER TABLE users ADD COLUMN photo_url TEXT")
             conn.commit()
         except: pass
-    rows = conn.execute("""
-        SELECT t.*, u.name as owner_name, u.avatar as owner_avatar,
-               COALESCE(u.photo_url,'') as owner_photo
-        FROM territories t LEFT JOIN users u ON t.user_id = u.id
-    """).fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["polygon"] = json.loads(d["polygon"])
-        if d.get("gps_path"):
-            try: d["gps_path"] = json.loads(d["gps_path"])
-            except: d["gps_path"] = None
-        else:
-            d["gps_path"] = None
-        result.append(d)
-    return jsonify(result)
+
+        rows = conn.execute("""
+            SELECT t.*, u.name as owner_name, u.avatar as owner_avatar,
+                   COALESCE(u.photo_url,'') as owner_photo
+            FROM territories t LEFT JOIN users u ON t.user_id = u.id
+        """).fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            try:
+                d = dict(r)
+                d["polygon"] = json.loads(d["polygon"])
+                if d.get("gps_path"):
+                    try: d["gps_path"] = json.loads(d["gps_path"])
+                    except: d["gps_path"] = None
+                else:
+                    d["gps_path"] = None
+                result.append(d)
+            except Exception as row_err:
+                print(f"Skipping bad territory row: {row_err}")
+                continue
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        print("get_territories ERROR:", traceback.format_exc())
+        return jsonify([])  # return empty array so frontend doesn't crash
 
 @app.route("/api/territories", methods=["POST"])
 def create_territory():
-  try:
-    uid = get_uid()
-    if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
+    try:
+        uid = get_uid()
+        if not uid:
+            return jsonify({"ok": False, "error": "not logged in"}), 401
 
-    data     = request.json or {}
-    gps      = data.get("gps_points",[])
-    name     = data.get("name", f"Zone {uuid.uuid4().hex[:4].upper()}")
-    sim_mode = data.get("sim_mode", False)
+        data     = request.json or {}
+        gps      = data.get("gps_points", [])
+        name     = data.get("name", f"Run {uuid.uuid4().hex[:4].upper()}")
+        sim_mode = data.get("sim_mode", False)
 
-    if len(gps) < 4:
-        return jsonify({"ok":False,"error":"Need at least 4 GPS points"}),400
+        if len(gps) < 4:
+            return jsonify({"ok": False, "error": "Need at least 4 GPS points"}), 400
 
-    # Build polygon from GPS path
-    pts = [[float(p[0]),float(p[1])] for p in gps]
-    sampled = pts  # for gps_path storage
+        pts = [[float(p[0]), float(p[1])] for p in gps]
 
-    if sim_mode:
-        # Sim mode — INTVL style same as real GPS
-        # Path from first to last clicked point + straight closing line
-        sampled = pts
-        polygon = pts + [pts[0]]  # close polygon
-    else:
-        # Real GPS run — INTVL style:
-        # Use the actual run path + straight dashed closing line
-        # This creates a polygon that exactly matches the run shape
-        pts = [[float(p[0]),float(p[1])] for p in gps]
-
-        # Subsample for cleaner polygon (max 300 points)
-        step = max(1, len(pts) // 300)
-        sampled = pts[::step]
-        if sampled[-1] != pts[-1]:
-            sampled.append(pts[-1])  # always include last point
-
-        # Close the polygon: run path forward + straight line back to start
-        # This is exactly what INTVL does — the dashed line IS the closing edge
-        polygon = sampled + [sampled[0]]  # close back to start
-
-        # Validate with Shapely if available
-        if SHAPELY_AVAILABLE:
-            try:
-                from shapely.geometry import Polygon as ShapelyPoly
-                sp = make_valid(ShapelyPoly([(p[1],p[0]) for p in polygon]))
-                if not sp.is_empty and sp.area > 0:
-                    # Use Shapely-validated polygon
-                    polygon = [[c[1],c[0]] for c in sp.exterior.coords]
-                # else keep the raw polygon
-            except Exception as e:
-                print("Shapely validation error:", e)
-
-    if len(polygon) < 3:
-        return jsonify({"ok":False,"error":"Could not form polygon"}),400
-
-    area = polygon_area_km2(polygon)
-
-    conn = get_db(); c = conn.cursor()
-
-    # Get current user
-    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    if not user:
-        conn.close()
-        return jsonify({"ok":False,"error":"User not found"}),404
-
-    # Proportional steal: >50% overlap = full steal, <=50% = keep original zone
-    # Uses Shapely for precise clipping when available, bbox ratio as fallback
-    STEAL_THRESHOLD = 50.0
-    all_t = c.execute("SELECT * FROM territories WHERE user_id != ?", (uid,)).fetchall()
-    stolen_from = []
-    seen_uids = set()
-
-    for t in all_t:
-        t_poly = json.loads(t["polygon"])
-        if not polygons_truly_overlap(polygon, t_poly):
-            continue
-
-        overlap_pct = get_overlap_percentage(t_poly, polygon)
-
-        if overlap_pct >= STEAL_THRESHOLD:
-            # Major overlap - full zone stolen
-            stolen_from.append(t["user_id"])
-            c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
-            c.execute("UPDATE users SET zones = MAX(0, zones-1) WHERE id=?", (t["user_id"],))
+        # Build polygon
+        if sim_mode:
+            sampled = pts
+            polygon = pts + [pts[0]]
         else:
-            # Minor overlap - clip cleanly with Shapely, Player 1 keeps the rest
-            remaining_polys = clip_polygon(t_poly, polygon)
-            if not remaining_polys:
-                stolen_from.append(t["user_id"])
-                c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
-                c.execute("UPDATE users SET zones = MAX(0, zones-1) WHERE id=?", (t["user_id"],))
-            else:
-                largest = max(remaining_polys, key=lambda p: polygon_area_km2(p))
-                new_area = round(polygon_area_km2(largest), 4)
-                c.execute("UPDATE territories SET polygon=?, area_km2=? WHERE id=?",
-                          (json.dumps(largest), new_area, t["id"]))
-                # If zone split into pieces, save each piece as a separate zone
-                for extra in remaining_polys[1:]:
-                    if polygon_area_km2(extra) > 0.0001:
-                        extra_tid = "t_" + uuid.uuid4().hex[:8]
-                        c.execute("""INSERT INTO territories
-                                     (id, user_id, name, polygon, area_km2, captured_at, color)
-                                     VALUES (?,?,?,?,?,?,?)""",
-                                  (extra_tid, t["user_id"], t["name"]+" (part)",
-                                   json.dumps(extra),
-                                   round(polygon_area_km2(extra), 4),
-                                   datetime.utcnow().isoformat()+"Z",
-                                   t["color"]))
-                        c.execute("UPDATE users SET zones=zones+1 WHERE id=?", (t["user_id"],))
-                stolen_from.append(t["user_id"])
+            step    = max(1, len(pts) // 300)
+            sampled = pts[::step]
+            if sampled[-1] != pts[-1]:
+                sampled.append(pts[-1])
+            polygon = sampled + [sampled[0]]
+            # Shapely validation — optional, skip on error
+            if SHAPELY_AVAILABLE:
+                try:
+                    from shapely.geometry import Polygon as ShapelyPoly
+                    sp = make_valid(ShapelyPoly([(p[1], p[0]) for p in polygon]))
+                    if not sp.is_empty and sp.area > 0:
+                        polygon = [[c[1], c[0]] for c in sp.exterior.coords]
+                except Exception as e:
+                    print("Shapely validation skipped:", e)
 
-    stolen_names = []
-    for suid in stolen_from:
-        if suid not in seen_uids:
-            su = c.execute("SELECT name FROM users WHERE id=?", (suid,)).fetchone()
-            if su: stolen_names.append(su["name"])
-            seen_uids.add(suid)
+        if len(polygon) < 3:
+            return jsonify({"ok": False, "error": "Could not form polygon"}), 400
 
-    # Remove own overlapping zones (will be replaced by new zone)
-    my_t = c.execute("SELECT * FROM territories WHERE user_id=?", (uid,)).fetchall()
-    for t in my_t:
-        t_poly = json.loads(t["polygon"])
-        if polygons_truly_overlap(polygon, t_poly):
-            c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
-            c.execute("UPDATE users SET zones = MAX(0, zones-1) WHERE id=?", (uid,))
+        area = polygon_area_km2(polygon)
 
-    # Distance estimate
-    dist = sum(
-        math.sqrt((gps[i][0]-gps[i-1][0])**2+(gps[i][1]-gps[i-1][1])**2)*111
-        for i in range(1,len(gps))
-    )
+        # Run stats
+        dist = sum(
+            math.sqrt((gps[i][0]-gps[i-1][0])**2 + (gps[i][1]-gps[i-1][1])**2) * 111
+            for i in range(1, len(gps))
+        )
+        run_km   = round(data.get("total_km", dist), 2)
+        avg_pace = data.get("avg_pace", None)
+        duration = data.get("duration", None)
 
-    # Insert new territory — explicit columns so ALTER TABLE additions don't break it
-    tid   = "t_" + uuid.uuid4().hex[:8]
-    now   = datetime.utcnow().isoformat()+"Z"
-    color = user["color"]
-    gps_path_json = json.dumps(sampled) if not sim_mode else json.dumps(polygon)
-    # Run stats from frontend
-    run_km        = round(data.get("total_km", dist), 2)
-    avg_pace      = data.get("avg_pace", None)
-    duration      = data.get("duration", None)
-    # Straight-line distance: start point → end point
-    if len(gps) >= 2:
-        import math as _math
-        lat1,lon1 = math.radians(gps[0][0]),math.radians(gps[0][1])
-        lat2,lon2 = math.radians(gps[-1][0]),math.radians(gps[-1][1])
-        dlat = lat2-lat1; dlon = lon2-lon1
-        a_ = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
-        straight_km = round(6371*2*math.atan2(math.sqrt(a_),math.sqrt(1-a_)), 3)
-    else:
-        straight_km = 0.0
-
-    # Ensure extra columns exist
-    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT",
-                "duration TEXT", "straight_km REAL"]:
+        # Straight-line A→B distance
         try:
-            c.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+            lat1, lon1 = math.radians(gps[0][0]),  math.radians(gps[0][1])
+            lat2, lon2 = math.radians(gps[-1][0]), math.radians(gps[-1][1])
+            dlat = lat2 - lat1; dlon = lon2 - lon1
+            a_ = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
+            straight_km = round(6371 * 2 * math.atan2(math.sqrt(a_), math.sqrt(1-a_)), 3)
+        except:
+            straight_km = 0.0
+
+        conn = get_db(); c = conn.cursor()
+
+        # Ensure user exists
+        user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not user:
+            conn.close()
+            return jsonify({"ok": False, "error": "User not found"}), 404
+
+        # Ensure all columns exist
+        for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT",
+                    "duration TEXT", "straight_km REAL"]:
+            try:
+                c.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+                conn.commit()
+            except: pass
+
+        # ── Save the territory FIRST ──────────────────────────────────────
+        tid   = "t_" + uuid.uuid4().hex[:8]
+        now   = datetime.utcnow().isoformat() + "Z"
+        color = user["color"]
+        gps_path_json = json.dumps(sampled) if not sim_mode else json.dumps(polygon)
+
+        c.execute("""INSERT INTO territories
+                     (id, user_id, name, polygon, area_km2, captured_at, color,
+                      gps_path, total_km, avg_pace, duration, straight_km)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (tid, uid, name, json.dumps(polygon), round(area, 4), now, color,
+                   gps_path_json, run_km, avg_pace, duration, straight_km))
+        c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
+                  (run_km, uid))
+        conn.commit()
+
+        # ── Steal logic — run after save, skip on any error ───────────────
+        stolen_names = []
+        try:
+            all_t = c.execute("SELECT * FROM territories WHERE user_id != ?", (uid,)).fetchall()
+            for t in all_t:
+                try:
+                    t_poly = json.loads(t["polygon"])
+                    if not polygons_truly_overlap(polygon, t_poly):
+                        continue
+                    overlap_pct = get_overlap_percentage(t_poly, polygon)
+                    if overlap_pct >= 50.0:
+                        c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                        c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (t["user_id"],))
+                        su = c.execute("SELECT name FROM users WHERE id=?", (t["user_id"],)).fetchone()
+                        if su: stolen_names.append(su["name"])
+                    else:
+                        remaining = clip_polygon(t_poly, polygon)
+                        if not remaining:
+                            c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                            c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (t["user_id"],))
+                        else:
+                            largest  = max(remaining, key=lambda p: polygon_area_km2(p))
+                            new_area = round(polygon_area_km2(largest), 4)
+                            c.execute("UPDATE territories SET polygon=?, area_km2=? WHERE id=?",
+                                      (json.dumps(largest), new_area, t["id"]))
+                            for extra in remaining[1:]:
+                                if polygon_area_km2(extra) > 0.0001:
+                                    etid = "t_" + uuid.uuid4().hex[:8]
+                                    c.execute("""INSERT INTO territories
+                                                 (id, user_id, name, polygon, area_km2, captured_at, color)
+                                                 VALUES (?,?,?,?,?,?,?)""",
+                                              (etid, t["user_id"], t["name"]+" (part)",
+                                               json.dumps(extra),
+                                               round(polygon_area_km2(extra), 4),
+                                               now, t["color"]))
+                                    c.execute("UPDATE users SET zones=zones+1 WHERE id=?", (t["user_id"],))
+                except Exception as steal_err:
+                    print(f"Steal error for territory {t['id']}:", steal_err)
+                    continue
+
+            # Remove own overlapping zones
+            my_t = c.execute("SELECT * FROM territories WHERE user_id=? AND id!=?", (uid, tid)).fetchall()
+            for t in my_t:
+                try:
+                    t_poly = json.loads(t["polygon"])
+                    if polygons_truly_overlap(polygon, t_poly):
+                        c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                        c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
+                except: pass
+
             conn.commit()
-        except: pass
+        except Exception as steal_outer_err:
+            print("Steal outer error:", steal_outer_err)
+            conn.commit()  # commit the save even if steal fails
 
-    c.execute("""INSERT INTO territories
-                 (id, user_id, name, polygon, area_km2, captured_at, color,
-                  gps_path, total_km, avg_pace, duration, straight_km)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-              (tid, uid, name, json.dumps(polygon), round(area,4), now, color,
-               gps_path_json, run_km, avg_pace, duration, straight_km))
+        updated_user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        conn.close()
 
-    # Update user stats
-    c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
-              (round(dist,2), uid))
+        msg = "Territory captured!"
+        if stolen_names:
+            msg += f" Stolen from: {', '.join(stolen_names)} 😈"
 
-    conn.commit()
+        return jsonify({
+            "ok": True,
+            "territory": {
+                "id": tid, "user_id": uid, "name": name, "polygon": polygon,
+                "gps_path": sampled if not sim_mode else polygon,
+                "area_km2": round(area, 4), "captured_at": now, "color": color,
+                "owner_name": updated_user["name"] if updated_user else name,
+                "total_km": run_km, "avg_pace": avg_pace,
+                "duration": duration, "straight_km": straight_km
+            },
+            "stolen_from": stolen_names,
+            "message": msg,
+            "user": dict(updated_user) if updated_user else {}
+        })
 
-    # Fetch updated user
-    updated_user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    conn.close()
-
-    msg = "Territory captured!"
-    if stolen_names:
-        msg += f" Stolen from: {', '.join(stolen_names)} 😈"
-
-    return jsonify({
-        "ok": True,
-        "territory": {"id":tid,"user_id":uid,"name":name,"polygon":polygon,
-                      "gps_path":sampled if not sim_mode else polygon,
-                      "area_km2":round(area,4),"captured_at":now,"color":color,
-                      "owner_name":updated_user["name"],
-                      "total_km":run_km,"avg_pace":avg_pace,
-                      "duration":duration,"straight_km":straight_km},
-        "stolen_from": stolen_names,
-        "message": msg,
-        "user": dict(updated_user)
-    })
-  except Exception as e:
-    import traceback
-    print("create_territory ERROR:", traceback.format_exc())
-    return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception as e:
+        import traceback
+        print("create_territory ERROR:", traceback.format_exc())
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/territories/<tid>", methods=["DELETE"])
 def delete_territory(tid):
