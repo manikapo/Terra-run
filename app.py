@@ -630,6 +630,37 @@ def clear_demo():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "message": "Demo data removed"})
+
+@app.route("/api/admin/test-save")
+def test_save():
+    """Quick test: save a dummy territory for the current user and return result."""
+    uid = get_uid()
+    if not uid:
+        return jsonify({"ok": False, "error": "not logged in — pass ?_uid=YOUR_UID"})
+    conn = get_db(); c = conn.cursor()
+    # Ensure columns exist
+    for col in ["gps_path TEXT", "total_km REAL", "avg_pace TEXT", "duration TEXT", "straight_km REAL"]:
+        try:
+            c.execute(f"ALTER TABLE territories ADD COLUMN {col}")
+            conn.commit()
+        except: pass
+    tid = "test_" + uuid.uuid4().hex[:6]
+    try:
+        c.execute("""INSERT INTO territories
+                     (id, user_id, name, polygon, area_km2, captured_at, color,
+                      gps_path, total_km, avg_pace, duration, straight_km)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (tid, uid, "Test Zone", "[[0,0],[1,0],[1,1]]", 0.01,
+                   datetime.utcnow().isoformat()+"Z", "#00ff88",
+                   None, 1.0, "5'00\"", "10m 00s", 0.5))
+        c.execute("UPDATE users SET zones=zones+1 WHERE id=?", (uid,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "tid": tid, "message": "Test territory saved! Check map."})
+    except Exception as e:
+        import traceback
+        conn.close()
+        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
     conn = get_db()
     user = conn.execute("SELECT id,name,color,zones FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
