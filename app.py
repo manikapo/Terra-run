@@ -624,7 +624,22 @@ def clear_demo():
     conn.close()
     return jsonify({"ok": True, "message": "Demo data removed"})
 
-@app.route("/api/admin/test-save")
+@app.route("/api/admin/cleanup")
+def cleanup():
+    """Delete test territories and fix zone counts."""
+    uid = get_uid()
+    if not uid:
+        return jsonify({"ok": False, "error": "pass ?_uid=YOUR_UID"})
+    conn = get_db(); c = conn.cursor()
+    # Delete test territories for this user
+    c.execute("DELETE FROM territories WHERE user_id=? AND (id LIKE 'test_%' OR name='Test Zone')", (uid,))
+    deleted = conn.execute("SELECT changes()").fetchone()[0]
+    # Recount zones properly
+    real_count = c.execute("SELECT COUNT(*) FROM territories WHERE user_id=?", (uid,)).fetchone()[0]
+    c.execute("UPDATE users SET zones=? WHERE id=?", (real_count, uid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "deleted_test": deleted, "zones_now": real_count})
 def test_save():
     """Quick test: save a dummy territory for the current user and return result."""
     uid = get_uid()
