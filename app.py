@@ -256,11 +256,13 @@ def get_uid():
 def guest_login():
     data = request.json or {}
     name = data.get("name","Runner").strip() or "Runner"
-    
-    # If client sends existing uid, try to restore that session first
     existing_uid = data.get("uid") or data.get("_uid")
-    
     conn = get_db(); c = conn.cursor()
+    # Ensure photo_url column exists
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN photo_url TEXT")
+        conn.commit()
+    except: pass
     
     # Try to find user by existing uid first
     if existing_uid:
