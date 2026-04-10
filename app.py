@@ -612,6 +612,31 @@ def whoami():
     return jsonify({"uid":uid,"found":bool(user),
                     "user":dict(user) if user else None})
 
+@app.route("/api/admin/cleanup-all")
+def cleanup_all():
+    """Remove ALL test/demo territories for every user and fix zone counts."""
+    conn = get_db(); c = conn.cursor()
+    # Delete test territories
+    c.execute("DELETE FROM territories WHERE id LIKE 'test_%' OR name='Test Zone'")
+    deleted = conn.execute("SELECT changes()").fetchone()[0]
+    # Fix zone counts for all users
+    users = c.execute("SELECT id FROM users").fetchall()
+    for u in users:
+        real_count = c.execute("SELECT COUNT(*) FROM territories WHERE user_id=?",
+                               (u["id"],)).fetchone()[0]
+        c.execute("UPDATE users SET zones=? WHERE id=?", (real_count, u["id"]))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "deleted_test": deleted})
+
+@app.route("/api/admin/list-users")
+def list_users():
+    """List all users and their territory counts."""
+    conn = get_db()
+    users = conn.execute("SELECT id, name, zones, total_km FROM users ORDER BY zones DESC").fetchall()
+    conn.close()
+    return jsonify([dict(u) for u in users])
+
 @app.route("/api/admin/clear-demo")
 def clear_demo():
     """Remove demo seed data. Visit once to clean the DB."""
