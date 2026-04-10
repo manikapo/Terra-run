@@ -612,6 +612,16 @@ def whoami():
     return jsonify({"uid":uid,"found":bool(user),
                     "user":dict(user) if user else None})
 
+@app.route("/api/admin/reset-all")
+def reset_all():
+    """Delete ALL territories and reset all user zone counts to 0."""
+    conn = get_db(); c = conn.cursor()
+    c.execute("DELETE FROM territories")
+    c.execute("UPDATE users SET zones=0, total_km=0")
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "message": "All territories deleted, all users reset to 0"})
+
 @app.route("/api/admin/cleanup-all")
 def cleanup_all():
     """Remove ALL test/demo territories for every user and fix zone counts."""
