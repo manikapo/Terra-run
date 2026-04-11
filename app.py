@@ -851,6 +851,7 @@ def strava_callback():
         "grant_type": "authorization_code"
     })
     data = r.json()
+    print("Strava token response:", data)  # Log full response to Railway logs
     if "access_token" not in data:
         return f"Strava auth error: {data}", 400
 
