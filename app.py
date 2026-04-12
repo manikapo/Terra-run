@@ -5,7 +5,7 @@ pip install flask flask-cors requests python-dotenv gunicorn shapely
 """
 
 from flask import Flask, jsonify, request, redirect, session
-import json, math, os, uuid, hashlib, sqlite3
+import json, math, os, uuid, hashlib, sqlite3, urllib.parse
 from datetime import datetime
 import requests
 
@@ -726,7 +726,6 @@ def test_save():
 @app.route("/auth/google")
 def google_connect():
     """Redirect user to Google OAuth consent screen."""
-    import urllib.parse
     uid = request.args.get('_uid') or get_uid()
     state = uid or "new"
     params = {
@@ -797,10 +796,10 @@ def google_callback():
         count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         color = COLOR_POOL[count % len(COLOR_POOL)]
         now   = datetime.utcnow().isoformat() + "Z"
-        c.execute("INSERT OR IGNORE INTO users VALUES (?,?,?,?,?,?,?,?)",
-                  (uid, name, avatar, color, 0.0, 0, None, now))
-        c.execute("UPDATE users SET photo_url=?, email=? WHERE id=?",
-                  (photo_url, email, uid))
+        c.execute("""INSERT OR IGNORE INTO users
+                     (id, name, avatar, color, total_km, zones, strava_token, created_at, photo_url, email)
+                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                  (uid, name, avatar, color, 0.0, 0, None, now, photo_url, email))
     else:
         # Returning Google user — update name/photo in case they changed
         c.execute("UPDATE users SET name=?, photo_url=?, email=? WHERE id=?",
@@ -818,7 +817,7 @@ def google_callback():
     conn.close()
 
     session["user_id"] = uid
-    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={requests.utils.quote(name)}")
+    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={urllib.parse.quote(name)}")
 
 
 @app.route("/strava/connect")
