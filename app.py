@@ -75,6 +75,10 @@ def after_request(response):
 STRAVA_CLIENT_ID     = os.getenv("STRAVA_CLIENT_ID", "YOUR_STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "YOUR_STRAVA_CLIENT_SECRET")
 STRAVA_REDIRECT_URI  = os.getenv("STRAVA_REDIRECT_URI", "http://localhost:5000/strava/callback")
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI", "https://web-production-4077c.up.railway.app/auth/google/callback")
+FRONTEND_URL         = os.getenv("FRONTEND_URL", "https://play.8me.in")
 DB_PATH              = os.getenv("DB_PATH", "terra_run.db")
 
 COLOR_POOL = ["#00ff88","#ff6b35","#00cfff","#ff3cac","#ffd700","#a78bfa",
@@ -712,7 +716,105 @@ def test_save():
     return jsonify({"uid":uid,"found":bool(user),
                     "user":dict(user) if user else None})
 
-# ── Strava OAuth ──────────────────────────────────────────────────────────────
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+@app.route("/auth/google")
+def google_connect():
+    """Redirect user to Google OAuth consent screen."""
+    import urllib.parse
+    uid = request.args.get('_uid') or get_uid()
+    state = uid or "new"
+    params = {
+        "client_id":     GOOGLE_CLIENT_ID,
+        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         "openid email profile",
+        "state":         state,
+        "access_type":   "offline",
+        "prompt":        "select_account"
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+    return redirect(url)
+
+@app.route("/auth/google/callback")
+def google_callback():
+    """Handle Google OAuth callback — create or update user."""
+    code  = request.args.get("code")
+    state = request.args.get("state", "new")
+    error = request.args.get("error")
+
+    if error or not code:
+        return redirect(f"{FRONTEND_URL}?google=error")
+
+    # Exchange code for tokens
+    token_res = requests.post("https://oauth2.googleapis.com/token", data={
+        "code":          code,
+        "client_id":     GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "grant_type":    "authorization_code"
+    })
+    token_data = token_res.json()
+    if "access_token" not in token_data:
+        print("Google token error:", token_data)
+        return redirect(f"{FRONTEND_URL}?google=error")
+
+    # Fetch user profile from Google
+    profile_res = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
+                               headers={"Authorization": f"Bearer {token_data['access_token']}"})
+    profile = profile_res.json()
+
+    google_id = profile.get("sub")
+    email     = profile.get("email", "")
+    name      = profile.get("name", email.split("@")[0] if email else "Runner")
+    photo_url = profile.get("picture", "")
+    avatar    = name[:2].upper()
+
+    if not google_id:
+        return redirect(f"{FRONTEND_URL}?google=error")
+
+    uid = f"google_{google_id}"
+
+    conn = get_db(); c = conn.cursor()
+    # Ensure photo_url column exists
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN photo_url TEXT")
+        conn.commit()
+    except: pass
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        conn.commit()
+    except: pass
+
+    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not user:
+        # New Google user — assign a color
+        count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        color = COLOR_POOL[count % len(COLOR_POOL)]
+        now   = datetime.utcnow().isoformat() + "Z"
+        c.execute("INSERT OR IGNORE INTO users VALUES (?,?,?,?,?,?,?,?)",
+                  (uid, name, avatar, color, 0.0, 0, None, now))
+        c.execute("UPDATE users SET photo_url=?, email=? WHERE id=?",
+                  (photo_url, email, uid))
+    else:
+        # Returning Google user — update name/photo in case they changed
+        c.execute("UPDATE users SET name=?, photo_url=?, email=? WHERE id=?",
+                  (name, photo_url, email, uid))
+
+    # If state was an existing guest UID, migrate their territories
+    if state and state != "new" and state != uid and state.startswith("u_"):
+        c.execute("UPDATE territories SET user_id=? WHERE user_id=?", (uid, state))
+        zone_count = c.execute("SELECT COUNT(*) FROM territories WHERE user_id=?", (uid,)).fetchone()[0]
+        c.execute("UPDATE users SET zones=? WHERE id=?", (zone_count, uid))
+        print(f"Migrated guest {state} → Google {uid}")
+
+    conn.commit()
+    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+
+    session["user_id"] = uid
+    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={requests.utils.quote(name)}")
+
+
 @app.route("/strava/connect")
 def strava_connect():
     uid = get_uid()
