@@ -32,6 +32,7 @@ ALLOWED_ORIGINS = [
     "http://play.8me.in",
     "https://8me.in",
     "http://8me.in",
+    "https://api.8me.in",
     "https://web-production-4077c.up.railway.app",
     "http://localhost:5500",
     "http://localhost:3000",
@@ -290,6 +291,11 @@ def guest_login():
     conn.close()
     session["user_id"] = uid
     return jsonify({"ok": True, "user": dict(user)})
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
 
 @app.route("/api/me")
 def me():
