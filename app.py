@@ -130,6 +130,13 @@ def init_db():
     );
     """)
 
+    # Migrate — add username column if not exists
+    for col in ["username TEXT", "photo_url TEXT", "email TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            conn.commit()
+        except: pass
+
     # No demo seed — start clean for real users
     conn.commit()
     conn.close()
@@ -277,19 +284,67 @@ def guest_login():
             session["user_id"] = existing_uid
             return jsonify({"ok": True, "user": dict(user)})
     
-    # Otherwise create/find by name hash
-    uid = "u_" + hashlib.md5(name.lower().encode()).hexdigest()[:10]
+    # If no existing uid, always create a NEW unique user
+    # Use random UUID so two people with same name get separate accounts
+    uid = "u_" + uuid.uuid4().hex[:12]
+    count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    color = assign_color(count)
+    now   = datetime.utcnow().isoformat()+"Z"
+    c.execute("""INSERT INTO users
+                 (id, name, avatar, color, total_km, zones, strava_token, created_at)
+                 VALUES (?,?,?,?,?,?,?,?)""",
+              (uid, name, name[:2].upper(), color, 0.0, 0, None, now))
+    conn.commit()
     user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    if not user:
-        count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        color = assign_color(count)
-        now   = datetime.utcnow().isoformat()+"Z"
-        c.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
-                  (uid,name,name[:2].upper(),color,0.0,0,None,now))
-        conn.commit()
-        user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     session["user_id"] = uid
+    return jsonify({"ok": True, "user": dict(user)})
+
+@app.route("/api/username/check")
+def check_username():
+    """Check if a username is available."""
+    username = request.args.get("username", "").strip().lower()
+    if not username:
+        return jsonify({"ok": False, "error": "Username required"})
+    if len(username) < 3:
+        return jsonify({"ok": False, "error": "Too short — minimum 3 characters"})
+    if len(username) > 20:
+        return jsonify({"ok": False, "error": "Too long — maximum 20 characters"})
+    if not username.replace("_","").replace(".","").isalnum():
+        return jsonify({"ok": False, "error": "Only letters, numbers, _ and . allowed"})
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM users WHERE LOWER(username)=?", (username,)).fetchone()
+    conn.close()
+    if existing:
+        return jsonify({"ok": False, "error": "Username already taken"})
+    return jsonify({"ok": True, "available": True})
+
+@app.route("/api/username/set", methods=["POST"])
+def set_username():
+    """Set username for logged-in user."""
+    uid = get_uid()
+    if not uid: return jsonify({"ok": False, "error": "Not logged in"}), 401
+    data = request.json or {}
+    username = data.get("username", "").strip().lower()
+    if not username:
+        return jsonify({"ok": False, "error": "Username required"})
+    if len(username) < 3:
+        return jsonify({"ok": False, "error": "Too short — minimum 3 characters"})
+    if len(username) > 20:
+        return jsonify({"ok": False, "error": "Too long — maximum 20 characters"})
+    if not username.replace("_","").replace(".","").isalnum():
+        return jsonify({"ok": False, "error": "Only letters, numbers, _ and . allowed"})
+    conn = get_db(); c = conn.cursor()
+    # Check not taken by someone else
+    existing = c.execute("SELECT id FROM users WHERE LOWER(username)=? AND id!=?",
+                         (username, uid)).fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"ok": False, "error": "Username already taken"})
+    c.execute("UPDATE users SET username=? WHERE id=?", (username, uid))
+    conn.commit()
+    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
     return jsonify({"ok": True, "user": dict(user)})
 
 @app.route("/api/logout", methods=["POST"])
@@ -327,7 +382,8 @@ def get_territories():
 
         rows = conn.execute("""
             SELECT t.*, u.name as owner_name, u.avatar as owner_avatar,
-                   COALESCE(u.photo_url,'') as owner_photo
+                   COALESCE(u.photo_url,'') as owner_photo,
+                   COALESCE(u.username, u.name) as owner_display
             FROM territories t LEFT JOIN users u ON t.user_id = u.id
         """).fetchall()
         conn.close()
