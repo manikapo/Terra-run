@@ -1,13 +1,21 @@
 """
 Infinite Me — Backend v2
 8me.in | Run. Claim. Own your world.
-pip install flask flask-cors requests python-dotenv gunicorn shapely
+pip install flask flask-cors requests python-dotenv gunicorn shapely pywebpush
 """
 
 from flask import Flask, jsonify, request, redirect, session
 import json, math, os, uuid, hashlib, sqlite3, urllib.parse
 from datetime import datetime
 import requests
+
+try:
+    from pywebpush import webpush, WebPushException
+    WEBPUSH_AVAILABLE = True
+    print("WebPush loaded OK")
+except ImportError:
+    WEBPUSH_AVAILABLE = False
+    print("WebPush not available — push notifications disabled")
 
 try:
     from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
@@ -80,6 +88,9 @@ GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI", "https://web-production-4077c.up.railway.app/auth/google/callback")
 FRONTEND_URL         = os.getenv("FRONTEND_URL", "https://play.8me.in")
+VAPID_PUBLIC_KEY     = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY    = os.getenv("VAPID_PRIVATE_KEY", "")
+VAPID_EMAIL          = os.getenv("VAPID_EMAIL", "mailto:hello@8me.in")
 DB_PATH              = os.getenv("DB_PATH", "terra_run.db")
 
 COLOR_POOL = ["#00ff88","#ff6b35","#00cfff","#ff3cac","#ffd700","#a78bfa",
@@ -126,6 +137,14 @@ def init_db():
         area_km2    REAL,
         captured_at TEXT,
         color       TEXT,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL,
+        subscription TEXT NOT NULL,
+        created_at  TEXT,
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
     """)
@@ -357,6 +376,96 @@ def index():
         "docs": "https://8me.in/tutorial.html"
     })
 
+# ── Push Notifications ────────────────────────────────────────────────────────
+def send_push(user_id, title, body, url="/"):
+    """Send a push notification to all subscriptions for a user."""
+    if not WEBPUSH_AVAILABLE or not VAPID_PRIVATE_KEY:
+        return
+    conn = get_db()
+    subs = conn.execute(
+        "SELECT subscription FROM push_subscriptions WHERE user_id=?",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+    payload = json.dumps({ "title": title, "body": body, "url": url })
+    for row in subs:
+        try:
+            webpush(
+                subscription_info=json.loads(row["subscription"]),
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_EMAIL}
+            )
+        except WebPushException as e:
+            print(f"Push failed for {user_id}: {e}")
+            # Remove dead subscriptions (410 = subscription expired)
+            if "410" in str(e):
+                conn2 = get_db()
+                conn2.execute(
+                    "DELETE FROM push_subscriptions WHERE subscription=?",
+                    (row["subscription"],)
+                )
+                conn2.commit()
+                conn2.close()
+        except Exception as e:
+            print(f"Push error: {e}")
+
+@app.route("/api/push/vapid-public-key")
+def get_vapid_public_key():
+    """Return VAPID public key for frontend subscription."""
+    return jsonify({"publicKey": VAPID_PUBLIC_KEY})
+
+@app.route("/api/push/subscribe", methods=["POST"])
+def push_subscribe():
+    """Store a push subscription for the logged-in user."""
+    uid = get_uid()
+    if not uid:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    data = request.json or {}
+    subscription = data.get("subscription")
+    if not subscription:
+        return jsonify({"ok": False, "error": "No subscription"}), 400
+    sub_str = json.dumps(subscription)
+    conn = get_db(); c = conn.cursor()
+    # Avoid duplicate subscriptions
+    existing = c.execute(
+        "SELECT id FROM push_subscriptions WHERE user_id=? AND subscription=?",
+        (uid, sub_str)
+    ).fetchone()
+    if not existing:
+        c.execute(
+            "INSERT INTO push_subscriptions VALUES (?,?,?,?)",
+            (uuid.uuid4().hex, uid, sub_str, datetime.utcnow().isoformat()+"Z")
+        )
+        conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/push/unsubscribe", methods=["POST"])
+def push_unsubscribe():
+    """Remove push subscription."""
+    uid = get_uid()
+    if not uid:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    conn = get_db()
+    conn.execute("DELETE FROM push_subscriptions WHERE user_id=?", (uid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/push/test", methods=["POST"])
+def push_test():
+    """Send a test notification to the logged-in user."""
+    uid = get_uid()
+    if not uid:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    send_push(uid,
+        "🏃 Infinite Me",
+        "Push notifications are working! You'll be alerted when your territory is stolen.",
+        "/"
+    )
+    return jsonify({"ok": True})
+
 @app.route("/api/logout", methods=["POST"])
 def logout():
     session.clear()
@@ -512,6 +621,7 @@ def create_territory():
 
         # ── Steal logic — run after save, skip on any error ───────────────
         stolen_names = []
+        stolen_user_ids = []
         try:
             all_t = c.execute("SELECT * FROM territories WHERE user_id != ?", (uid,)).fetchall()
             for t in all_t:
@@ -523,13 +633,19 @@ def create_territory():
                     if overlap_pct >= 50.0:
                         c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
                         c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (t["user_id"],))
-                        su = c.execute("SELECT name FROM users WHERE id=?", (t["user_id"],)).fetchone()
-                        if su: stolen_names.append(su["name"])
+                        su = c.execute("SELECT name, username FROM users WHERE id=?", (t["user_id"],)).fetchone()
+                        if su:
+                            stolen_names.append(su["name"])
+                            stolen_user_ids.append(t["user_id"])
                     else:
                         remaining = clip_polygon(t_poly, polygon)
                         if not remaining:
                             c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
                             c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (t["user_id"],))
+                            su = c.execute("SELECT name, username FROM users WHERE id=?", (t["user_id"],)).fetchone()
+                            if su:
+                                stolen_names.append(su["name"])
+                                stolen_user_ids.append(t["user_id"])
                         else:
                             largest  = max(remaining, key=lambda p: polygon_area_km2(p))
                             new_area = round(polygon_area_km2(largest), 4)
@@ -561,9 +677,22 @@ def create_territory():
                 except: pass
 
             conn.commit()
+
+            # ── Send push notifications to stolen users ────────────────────
+            if stolen_user_ids:
+                attacker = c.execute("SELECT name, username FROM users WHERE id=?", (uid,)).fetchone()
+                attacker_display = ('@' + attacker['username']) if attacker and attacker['username'] else (attacker['name'] if attacker else 'Someone')
+                for victim_uid in set(stolen_user_ids):
+                    send_push(
+                        victim_uid,
+                        "⚔️ Territory Stolen!",
+                        f"{attacker_display} just stole your zone! Open the app to reclaim it.",
+                        "/"
+                    )
+
         except Exception as steal_outer_err:
             print("Steal outer error:", steal_outer_err)
-            conn.commit()  # commit the save even if steal fails
+            conn.commit()
 
         updated_user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         conn.close()
