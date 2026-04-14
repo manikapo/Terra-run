@@ -347,6 +347,16 @@ def set_username():
     conn.close()
     return jsonify({"ok": True, "user": dict(user)})
 
+@app.route("/")
+def index():
+    return jsonify({
+        "name": "Infinite Me API",
+        "version": "2.0",
+        "status": "running",
+        "frontend": "https://play.8me.in",
+        "docs": "https://8me.in/tutorial.html"
+    })
+
 @app.route("/api/logout", methods=["POST"])
 def logout():
     session.clear()
