@@ -450,17 +450,14 @@ def push_subscribe():
         return jsonify({"ok": False, "error": "No subscription"}), 400
     sub_str = json.dumps(subscription)
     conn = get_db(); c = conn.cursor()
-    # Avoid duplicate subscriptions
-    existing = c.execute(
-        "SELECT id FROM push_subscriptions WHERE user_id=? AND subscription=?",
-        (uid, sub_str)
-    ).fetchone()
-    if not existing:
-        c.execute(
-            "INSERT INTO push_subscriptions VALUES (?,?,?,?)",
-            (uuid.uuid4().hex, uid, sub_str, datetime.utcnow().isoformat()+"Z")
-        )
-        conn.commit()
+    # Remove ALL old subscriptions for this user first — keep only the latest
+    c.execute("DELETE FROM push_subscriptions WHERE user_id=?", (uid,))
+    # Save the new subscription
+    c.execute(
+        "INSERT INTO push_subscriptions VALUES (?,?,?,?)",
+        (uuid.uuid4().hex, uid, sub_str, datetime.utcnow().isoformat()+"Z")
+    )
+    conn.commit()
     conn.close()
     return jsonify({"ok": True})
 
