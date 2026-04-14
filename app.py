@@ -410,6 +410,29 @@ def send_push(user_id, title, body, url="/"):
         except Exception as e:
             print(f"Push error: {e}")
 
+@app.route("/api/push/debug")
+def push_debug():
+    """Debug push notification setup."""
+    uid = get_uid()
+    if not uid:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    conn = get_db()
+    subs = conn.execute(
+        "SELECT id, created_at FROM push_subscriptions WHERE user_id=?",
+        (uid,)
+    ).fetchall()
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "webpush_available": WEBPUSH_AVAILABLE,
+        "vapid_public_key_set": bool(VAPID_PUBLIC_KEY),
+        "vapid_private_key_set": bool(VAPID_PRIVATE_KEY),
+        "vapid_private_key_length": len(VAPID_PRIVATE_KEY) if VAPID_PRIVATE_KEY else 0,
+        "vapid_email": VAPID_EMAIL,
+        "subscriptions_count": len(subs),
+        "subscriptions": [dict(s) for s in subs]
+    })
+
 @app.route("/api/push/vapid-public-key")
 def get_vapid_public_key():
     """Return VAPID public key for frontend subscription."""
