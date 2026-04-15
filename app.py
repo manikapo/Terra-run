@@ -477,11 +477,14 @@ def push_unsubscribe():
 def push_test():
     """Send a test notification to the logged-in user."""
     uid = get_uid()
-    if not uid:
-        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    if not uid: return jsonify({"ok": False, "error": "Not logged in"}), 401
+    conn = get_db()
+    user = conn.execute("SELECT name, username FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    display = ('@' + user['username']) if user and user['username'] else (user['name'] if user else 'Runner')
     send_push(uid,
-        "🏃 Infinite Me",
-        "Push notifications are working! You'll be alerted when your territory is stolen.",
+        "🏃 Infinite Me — Notifications Active",
+        f"Hey {display}! You'll now be alerted instantly when someone steals your territory.",
         "/"
     )
     return jsonify({"ok": True})
@@ -705,8 +708,8 @@ def create_territory():
                 for victim_uid in set(stolen_user_ids):
                     send_push(
                         victim_uid,
-                        "⚔️ Territory Stolen!",
-                        f"{attacker_display} just stole your zone! Open the app to reclaim it.",
+                        "⚔️ Your territory was stolen!",
+                        f"{attacker_display} just claimed your zone. Open the app and run to take it back!",
                         "/"
                     )
 
