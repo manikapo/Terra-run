@@ -1,5 +1,5 @@
 """
-Infinite Me — Backend v2.1
+Infinite Me — Backend v2
 8me.in | Run. Claim. Own your world.
 pip install flask flask-cors requests python-dotenv gunicorn shapely pywebpush
 """
@@ -764,20 +764,6 @@ def create_territory():
         import traceback
         print("create_territory ERROR:", traceback.format_exc())
         return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route("/api/territories/<tid>", methods=["DELETE"])
-def delete_territory(tid):
-    uid = get_uid()
-    if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
-    conn = get_db(); c = conn.cursor()
-    t = c.execute("SELECT * FROM territories WHERE id=? AND user_id=?", (tid,uid)).fetchone()
-    if not t:
-        conn.close()
-        return jsonify({"ok":False,"error":"Not found or not yours"}),404
-    c.execute("DELETE FROM territories WHERE id=?", (tid,))
-    c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
-    conn.commit(); conn.close()
-    return jsonify({"ok":True})
 
 # ── Leaderboard ───────────────────────────────────────────────────────────────
 @app.route("/api/leaderboard")
