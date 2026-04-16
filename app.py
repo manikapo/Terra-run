@@ -1,5 +1,5 @@
 """
-Infinite Me — Backend v2
+Infinite Me — Backend v2.1
 8me.in | Run. Claim. Own your world.
 pip install flask flask-cors requests python-dotenv gunicorn shapely pywebpush
 """
