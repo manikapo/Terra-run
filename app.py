@@ -477,14 +477,11 @@ def push_unsubscribe():
 def push_test():
     """Send a test notification to the logged-in user."""
     uid = get_uid()
-    if not uid: return jsonify({"ok": False, "error": "Not logged in"}), 401
-    conn = get_db()
-    user = conn.execute("SELECT name, username FROM users WHERE id=?", (uid,)).fetchone()
-    conn.close()
-    display = ('@' + user['username']) if user and user['username'] else (user['name'] if user else 'Runner')
+    if not uid:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
     send_push(uid,
-        "🏃 Infinite Me — Notifications Active",
-        f"Hey {display}! You'll now be alerted instantly when someone steals your territory.",
+        "🏃 Infinite Me",
+        "Push notifications are working! You'll be alerted when your territory is stolen.",
         "/"
     )
     return jsonify({"ok": True})
@@ -548,22 +545,6 @@ def get_territories():
         import traceback
         print("get_territories ERROR:", traceback.format_exc())
         return jsonify([])  # return empty array so frontend doesn't crash
-
-@app.route("/api/territories/<tid>", methods=["DELETE"])
-def delete_territory(tid):
-    """Delete a territory owned by the logged-in user."""
-    uid = get_uid()
-    if not uid: return jsonify({"ok": False, "error": "Not logged in"}), 401
-    conn = get_db(); c = conn.cursor()
-    t = c.execute("SELECT * FROM territories WHERE id=? AND user_id=?", (tid, uid)).fetchone()
-    if not t:
-        conn.close()
-        return jsonify({"ok": False, "error": "Territory not found"}), 404
-    c.execute("DELETE FROM territories WHERE id=?", (tid,))
-    c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
 
 @app.route("/api/territories", methods=["POST"])
 def create_territory():
@@ -705,19 +686,14 @@ def create_territory():
                     print(f"Steal error for territory {t['id']}:", steal_err)
                     continue
 
-            # Own overlapping zones — keep them, don't delete
-            # Runner can claim new territory alongside existing ones
-            # Only remove if new territory completely contains old one (>95% overlap)
+            # Remove own overlapping zones
             my_t = c.execute("SELECT * FROM territories WHERE user_id=? AND id!=?", (uid, tid)).fetchall()
             for t in my_t:
                 try:
                     t_poly = json.loads(t["polygon"])
                     if polygons_truly_overlap(polygon, t_poly):
-                        overlap_pct = get_overlap_percentage(t_poly, polygon)
-                        # Only remove old zone if new one covers >95% of it
-                        if overlap_pct >= 95.0:
-                            c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
-                            c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
+                        c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                        c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
                 except: pass
 
             conn.commit()
@@ -729,8 +705,8 @@ def create_territory():
                 for victim_uid in set(stolen_user_ids):
                     send_push(
                         victim_uid,
-                        "⚔️ Your territory was stolen!",
-                        f"{attacker_display} just claimed your zone. Open the app and run to take it back!",
+                        "⚔️ Territory Stolen!",
+                        f"{attacker_display} just stole your zone! Open the app to reclaim it.",
                         "/"
                     )
 
@@ -764,6 +740,20 @@ def create_territory():
         import traceback
         print("create_territory ERROR:", traceback.format_exc())
         return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/territories/<tid>", methods=["DELETE"])
+def delete_territory(tid):
+    uid = get_uid()
+    if not uid: return jsonify({"ok":False,"error":"not logged in"}),401
+    conn = get_db(); c = conn.cursor()
+    t = c.execute("SELECT * FROM territories WHERE id=? AND user_id=?", (tid,uid)).fetchone()
+    if not t:
+        conn.close()
+        return jsonify({"ok":False,"error":"Not found or not yours"}),404
+    c.execute("DELETE FROM territories WHERE id=?", (tid,))
+    c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok":True})
 
 # ── Leaderboard ───────────────────────────────────────────────────────────────
 @app.route("/api/leaderboard")
