@@ -92,6 +92,7 @@ VAPID_PUBLIC_KEY     = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY    = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_EMAIL          = os.getenv("VAPID_EMAIL", "mailto:hello@8me.in")
 DB_PATH              = os.getenv("DB_PATH", "terra_run.db")
+ADMIN_PASSWORD       = os.getenv("ADMIN_PASSWORD", "infiniteme-admin-2025")  # change via Railway env var
 
 COLOR_POOL = ["#00ff88","#ff6b35","#00cfff","#ff3cac","#ffd700","#a78bfa",
               "#ff6eb4","#4dffb4","#ff9500","#00e5ff"]
@@ -501,6 +502,63 @@ def me():
     if not user: return jsonify({"ok":False,"error":"user not found"}),404
     return jsonify({"ok":True,"user":dict(user)})
 
+# ── Speed Anti-Cheat ──────────────────────────────────────────────────────────
+VEHICLE_SPEED_KMH    = 28.0   # max sustained human running speed
+CHEAT_WINDOW_SECS    = 30     # rolling window to check for sustained over-speed
+CHEAT_SEGMENTS_MIN   = 3      # need at least N consecutive fast segments to flag
+
+def haversine_km(a, b):
+    """Distance in km between two [lat,lng] points."""
+    R = 6371.0
+    lat1, lon1 = math.radians(a[0]), math.radians(a[1])
+    lat2, lon2 = math.radians(b[0]), math.radians(b[1])
+    dlat = lat2 - lat1; dlon = lon2 - lon1
+    sin_dlat = math.sin(dlat / 2); sin_dlon = math.sin(dlon / 2)
+    a2 = sin_dlat**2 + math.cos(lat1) * math.cos(lat2) * sin_dlon**2
+    return R * 2 * math.atan2(math.sqrt(a2), math.sqrt(1 - a2))
+
+def check_vehicle_speed(gps_points_with_ts):
+    """
+    Detect vehicular movement. Each point is [lat, lng, timestamp_ms].
+    Returns (is_cheating: bool, max_speed_kmh: float, flagged_segments: int).
+    If no timestamps provided, returns (False, 0, 0) — graceful fallback.
+    """
+    pts = []
+    for p in gps_points_with_ts:
+        if len(p) >= 3 and p[2] is not None:
+            try:
+                pts.append((float(p[0]), float(p[1]), float(p[2])))
+            except (ValueError, TypeError):
+                pass
+
+    if len(pts) < 4:
+        return False, 0.0, 0  # No timestamps — can't check, allow through
+
+    max_speed = 0.0
+    consecutive_fast = 0
+    peak_consecutive  = 0
+
+    for i in range(1, len(pts)):
+        lat1, lng1, ts1 = pts[i-1]
+        lat2, lng2, ts2 = pts[i]
+        dt_secs = (ts2 - ts1) / 1000.0
+        if dt_secs <= 0 or dt_secs > 120:  # skip bad/stale segments
+            consecutive_fast = 0
+            continue
+        dist_km  = haversine_km([lat1, lng1], [lat2, lng2])
+        speed_kmh = dist_km / (dt_secs / 3600.0)
+        if speed_kmh > max_speed:
+            max_speed = speed_kmh
+        if speed_kmh > VEHICLE_SPEED_KMH:
+            consecutive_fast += 1
+            peak_consecutive = max(peak_consecutive, consecutive_fast)
+        else:
+            consecutive_fast = 0
+
+    is_cheating = peak_consecutive >= CHEAT_SEGMENTS_MIN
+    return is_cheating, round(max_speed, 1), peak_consecutive
+
+
 # ── Territories ───────────────────────────────────────────────────────────────
 @app.route("/api/territories")
 def get_territories():
@@ -554,12 +612,29 @@ def create_territory():
             return jsonify({"ok": False, "error": "not logged in"}), 401
 
         data     = request.json or {}
-        gps      = data.get("gps_points", [])
+        gps      = data.get("gps_points", [])  # each point: [lat, lng] or [lat, lng, ts_ms]
         name     = data.get("name", f"Run {uuid.uuid4().hex[:4].upper()}")
         sim_mode = data.get("sim_mode", False)
 
         if len(gps) < 4:
             return jsonify({"ok": False, "error": "Need at least 4 GPS points"}), 400
+
+        # ── Vehicle/Speed Anti-Cheat ──────────────────────────────────────
+        if not sim_mode:
+            is_cheating, max_speed, fast_segs = check_vehicle_speed(gps)
+            if is_cheating:
+                print(f"CHEAT DETECTED: uid={uid}, max_speed={max_speed} km/h, "
+                      f"consecutive_fast_segments={fast_segs}")
+                return jsonify({
+                    "ok": False,
+                    "error": "vehicle_speed",
+                    "max_speed_kmh": max_speed,
+                    "message": (
+                        f"Run rejected — speeds up to {max_speed:.1f} km/h detected "
+                        f"({fast_segs} consecutive segments over {VEHICLE_SPEED_KMH} km/h). "
+                        "Only human-paced runs are allowed."
+                    )
+                }), 400
 
         pts = [[float(p[0]), float(p[1])] for p in gps]
 
@@ -1236,6 +1311,133 @@ def strava_activities():
                            "date":a.get("start_date_local",""),
                            "moving_time_s":a.get("moving_time",0)})
     return jsonify(result)
+
+# ── Admin Panel ───────────────────────────────────────────────────────────────
+import functools, hashlib as _hl
+
+def admin_required(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.cookies.get("admin_token") or request.headers.get("X-Admin-Token")
+        expected = _hl.sha256(ADMIN_PASSWORD.encode()).hexdigest()
+        if token != expected:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route("/admin/login", methods=["POST"])
+def admin_login():
+    data = request.json or {}
+    pw   = data.get("password", "")
+    if pw != ADMIN_PASSWORD:
+        return jsonify({"ok": False, "error": "Wrong password"}), 401
+    token = _hl.sha256(ADMIN_PASSWORD.encode()).hexdigest()
+    resp  = jsonify({"ok": True, "token": token})
+    resp.set_cookie("admin_token", token, httponly=True, secure=True,
+                    samesite="None", max_age=86400 * 7)
+    return resp
+
+@app.route("/admin/logout", methods=["POST"])
+def admin_logout():
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("admin_token")
+    return resp
+
+@app.route("/admin/stats")
+@admin_required
+def admin_stats():
+    conn = get_db()
+    try:
+        # Ensure columns exist
+        for col in ["username TEXT", "photo_url TEXT", "email TEXT", "created_at TEXT"]:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+                conn.commit()
+            except: pass
+
+        users = conn.execute("""
+            SELECT u.id, u.name, COALESCE(u.username,'') as username,
+                   COALESCE(u.email,'') as email,
+                   u.color, u.avatar,
+                   u.total_km, u.zones,
+                   COALESCE(u.created_at,'') as created_at,
+                   COALESCE(u.photo_url,'') as photo_url,
+                   COUNT(t.id) as territory_count,
+                   COALESCE(SUM(t.area_km2),0) as total_area
+            FROM users u
+            LEFT JOIN territories t ON t.user_id = u.id
+            GROUP BY u.id
+            ORDER BY u.total_km DESC
+        """).fetchall()
+
+        total_territories = conn.execute("SELECT COUNT(*) FROM territories").fetchone()[0]
+        total_users       = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        total_km          = conn.execute("SELECT COALESCE(SUM(total_km),0) FROM users").fetchone()[0]
+
+        # Rank users by total_km
+        user_list = []
+        for i, u in enumerate(users):
+            d = dict(u)
+            d["rank"] = i + 1
+            # Determine auth type from id prefix
+            if d["id"].startswith("strava_"):
+                d["auth_type"] = "Strava"
+            elif d["id"].startswith("google_"):
+                d["auth_type"] = "Google"
+            else:
+                d["auth_type"] = "Guest"
+            user_list.append(d)
+
+        return jsonify({
+            "ok": True,
+            "summary": {
+                "total_users": total_users,
+                "total_territories": total_territories,
+                "total_km": round(total_km, 2),
+            },
+            "users": user_list
+        })
+    finally:
+        conn.close()
+
+@app.route("/admin/user/<uid>", methods=["DELETE"])
+@admin_required
+def admin_delete_user(uid):
+    """Remove a user and all their territories."""
+    conn = get_db(); c = conn.cursor()
+    try:
+        user = c.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+        if not user:
+            conn.close()
+            return jsonify({"ok": False, "error": "User not found"}), 404
+        c.execute("DELETE FROM territories WHERE user_id=?", (uid,))
+        c.execute("DELETE FROM push_subscriptions WHERE user_id=?", (uid,))
+        c.execute("DELETE FROM users WHERE id=?", (uid,))
+        conn.commit()
+        print(f"ADMIN: Deleted user {uid} ({user['name']})")
+        return jsonify({"ok": True, "deleted": uid, "name": user["name"]})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route("/admin/user/<uid>/territories")
+@admin_required
+def admin_user_territories(uid):
+    """Get all territories for a specific user."""
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT id, name, area_km2, captured_at,
+                   total_km, avg_pace, duration
+            FROM territories WHERE user_id=?
+            ORDER BY captured_at DESC
+        """, (uid,)).fetchall()
+        return jsonify({"ok": True, "territories": [dict(r) for r in rows]})
+    finally:
+        conn.close()
+
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 init_db()
