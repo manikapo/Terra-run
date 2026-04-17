@@ -59,7 +59,7 @@ def handle_preflight():
         res = app.make_response("")
         origin = get_cors_origin(request.headers.get("Origin"))
         res.headers["Access-Control-Allow-Origin"]      = origin
-        res.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept"
+        res.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
         res.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
         res.headers["Access-Control-Allow-Credentials"] = "true"
         res.headers["Access-Control-Max-Age"]           = "3600"
@@ -71,7 +71,7 @@ def handle_preflight():
 def after_request(response):
     origin = get_cors_origin(request.headers.get("Origin"))
     response.headers["Access-Control-Allow-Origin"]      = origin
-    response.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept"
+    response.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
     response.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Max-Age"]           = "3600"
@@ -1318,9 +1318,12 @@ import functools, hashlib as _hl
 def admin_required(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
-        token = request.cookies.get("admin_token") or request.headers.get("X-Admin-Token")
+        # Accept token from header, cookie, or query param (for cross-domain reliability)
+        token = (request.headers.get("X-Admin-Token")
+                 or request.cookies.get("admin_token")
+                 or request.args.get("_at"))
         expected = _hl.sha256(ADMIN_PASSWORD.encode()).hexdigest()
-        if token != expected:
+        if not token or token != expected:
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
