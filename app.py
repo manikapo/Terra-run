@@ -1441,6 +1441,70 @@ def admin_user_territories(uid):
     finally:
         conn.close()
 
+@app.route("/admin/user/<uid>/notify", methods=["POST"])
+@admin_required
+def admin_notify_user(uid):
+    """Send a push notification to a specific user from the admin panel."""
+    if not WEBPUSH_AVAILABLE or not VAPID_PRIVATE_KEY:
+        return jsonify({"ok": False, "error": "Push notifications not configured — check VAPID keys in Railway env vars"}), 400
+
+    data  = request.json or {}
+    title = data.get("title", "").strip()
+    body  = data.get("body", "").strip()
+    url   = data.get("url", "/").strip() or "/"
+
+    if not title or not body:
+        return jsonify({"ok": False, "error": "Title and message are required"}), 400
+
+    # Check user exists
+    conn = get_db()
+    try:
+        user = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+        if not user:
+            return jsonify({"ok": False, "error": "User not found"}), 404
+
+        subs = conn.execute(
+            "SELECT subscription FROM push_subscriptions WHERE user_id=?", (uid,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not subs:
+        return jsonify({
+            "ok": False,
+            "error": f"{user['name']} has no push subscription — they may not have granted notification permission"
+        }), 400
+
+    # Fire the push using the existing send_push helper
+    sent = 0; failed = 0
+    payload = json.dumps({"title": title, "body": body, "url": url, "tag": "admin"})
+    for row in subs:
+        try:
+            webpush(
+                subscription_info=json.loads(row["subscription"]),
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_EMAIL}
+            )
+            sent += 1
+        except WebPushException as e:
+            print(f"Admin push failed for {uid}: {e}")
+            if "410" in str(e):
+                # Clean up expired subscription
+                conn2 = get_db()
+                conn2.execute("DELETE FROM push_subscriptions WHERE subscription=?", (row["subscription"],))
+                conn2.commit(); conn2.close()
+            failed += 1
+        except Exception as e:
+            print(f"Admin push error: {e}")
+            failed += 1
+
+    if sent == 0:
+        return jsonify({"ok": False, "error": "All subscriptions expired or failed — user may need to re-enable notifications"}), 400
+
+    print(f"ADMIN: Sent push to {uid} ({user['name']}): '{title}'")
+    return jsonify({"ok": True, "sent": sent, "failed": failed, "user": user["name"]})
+
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 init_db()
