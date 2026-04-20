@@ -84,9 +84,12 @@ def after_request(response):
 STRAVA_CLIENT_ID     = os.getenv("STRAVA_CLIENT_ID", "YOUR_STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "YOUR_STRAVA_CLIENT_SECRET")
 STRAVA_REDIRECT_URI  = os.getenv("STRAVA_REDIRECT_URI", "http://localhost:5000/strava/callback")
-GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI", "https://web-production-4077c.up.railway.app/auth/google/callback")
+GOOGLE_CLIENT_ID         = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET     = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI      = os.getenv("GOOGLE_REDIRECT_URI", "https://web-production-4077c.up.railway.app/auth/google/callback")
+GOOGLE_ANDROID_CLIENT_ID = os.getenv("GOOGLE_ANDROID_CLIENT_ID", "82989459925-jh30btiruj0cjibcvt69f9500s77ma04.apps.googleusercontent.com")
+# Native app uses the web callback URL but marks it with ?app=1 so we can redirect back to the app
+GOOGLE_NATIVE_REDIRECT   = os.getenv("GOOGLE_NATIVE_REDIRECT", "https://play.8me.in/auth/google/callback")
 FRONTEND_URL         = os.getenv("FRONTEND_URL", "https://play.8me.in")
 VAPID_PUBLIC_KEY     = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY    = os.getenv("VAPID_PRIVATE_KEY", "")
@@ -1018,12 +1021,16 @@ def google_connect():
     """Redirect user to Google OAuth consent screen."""
     uid = request.args.get('_uid') or get_uid()
     state = uid or "new"
+    is_native = request.args.get('native') == '1'
+    # Both web and native use the same redirect URI (Google requires https)
+    # We pass native flag via state so callback knows how to respond
+    redirect_uri = GOOGLE_REDIRECT_URI
     params = {
         "client_id":     GOOGLE_CLIENT_ID,
-        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "redirect_uri":  redirect_uri,
         "response_type": "code",
         "scope":         "openid email profile",
-        "state":         state,
+        "state":         state + ("|native" if is_native else ""),
         "access_type":   "offline",
         "prompt":        "select_account"
     }
@@ -1032,12 +1039,23 @@ def google_connect():
 
 @app.route("/auth/google/callback")
 def google_callback():
-    """Handle Google OAuth callback — create or update user."""
+    """Handle Google OAuth callback — web and native app."""
+    return _handle_google_callback(GOOGLE_REDIRECT_URI)
+
+def _handle_google_callback(redirect_uri, is_native=False):
+    """Shared Google OAuth callback logic for web and native app."""
     code  = request.args.get("code")
     state = request.args.get("state", "new")
     error = request.args.get("error")
 
+    # Detect native app from state flag
+    if state.endswith("|native"):
+        state = state[:-7]
+        is_native = True
+
     if error or not code:
+        if is_native:
+            return _native_close_page(error=True)
         return redirect(f"{FRONTEND_URL}?google=error")
 
     # Exchange code for tokens
@@ -1045,12 +1063,14 @@ def google_callback():
         "code":          code,
         "client_id":     GOOGLE_CLIENT_ID,
         "client_secret": GOOGLE_CLIENT_SECRET,
-        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "redirect_uri":  redirect_uri,
         "grant_type":    "authorization_code"
     })
     token_data = token_res.json()
     if "access_token" not in token_data:
         print("Google token error:", token_data)
+        if is_native:
+            return _native_close_page(error=True)
         return redirect(f"{FRONTEND_URL}?google=error")
 
     # Fetch user profile from Google
@@ -1065,12 +1085,13 @@ def google_callback():
     avatar    = name[:2].upper()
 
     if not google_id:
+        if is_native:
+            return _native_close_page(error=True)
         return redirect(f"{FRONTEND_URL}?google=error")
 
     uid = f"google_{google_id}"
 
     conn = get_db(); c = conn.cursor()
-    # Ensure photo_url column exists
     try:
         c.execute("ALTER TABLE users ADD COLUMN photo_url TEXT")
         conn.commit()
@@ -1082,7 +1103,6 @@ def google_callback():
 
     user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     if not user:
-        # New Google user — assign a color
         count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         color = COLOR_POOL[count % len(COLOR_POOL)]
         now   = datetime.utcnow().isoformat() + "Z"
@@ -1091,11 +1111,9 @@ def google_callback():
                      VALUES (?,?,?,?,?,?,?,?,?,?)""",
                   (uid, name, avatar, color, 0.0, 0, None, now, photo_url, email))
     else:
-        # Returning Google user — update name/photo in case they changed
         c.execute("UPDATE users SET name=?, photo_url=?, email=? WHERE id=?",
                   (name, photo_url, email, uid))
 
-    # If state was an existing guest UID, migrate their territories
     if state and state != "new" and state != uid and state.startswith("u_"):
         c.execute("UPDATE territories SET user_id=? WHERE user_id=?", (uid, state))
         zone_count = c.execute("SELECT COUNT(*) FROM territories WHERE user_id=?", (uid,)).fetchone()[0]
@@ -1103,11 +1121,80 @@ def google_callback():
         print(f"Migrated guest {state} → Google {uid}")
 
     conn.commit()
-    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
 
     session["user_id"] = uid
-    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={urllib.parse.quote(name)}")
+    encoded_name = urllib.parse.quote(name)
+
+    if is_native:
+        # Return a page that passes login data back to the Capacitor app
+        # and closes the browser tab
+        return _native_close_page(uid=uid, name=encoded_name)
+
+    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={encoded_name}")
+
+
+def _native_close_page(uid=None, name=None, error=False):
+    """
+    Returns an HTML page that:
+    1. Stores login data in localStorage (shared with the WebView)
+    2. Closes itself using Capacitor Browser plugin
+    3. Falls back to redirecting to the main app URL
+    """
+    if error:
+        data_js = "window.opener && window.opener.postMessage({google:'error'}, '*');"
+        redirect_url = f"{FRONTEND_URL}?google=error"
+    else:
+        data_js = f"""
+        // Store credentials so main WebView picks them up
+        try {{
+            localStorage.setItem('terra_uid', '{uid}');
+            localStorage.setItem('terra_name', decodeURIComponent('{name}'));
+            localStorage.setItem('_google_login_done', '1');
+        }} catch(e) {{}}
+        // Notify any opener window
+        try {{
+            if (window.opener) {{
+                window.opener.postMessage({{google:'connected', uid:'{uid}', name:'{name}'}}, '*');
+            }}
+        }} catch(e) {{}}
+        """
+        redirect_url = f"{FRONTEND_URL}?google=connected&uid={uid}&name={name}"
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Signing in...</title>
+<style>
+  body {{ background:#0a0c0f; color:#e8eaf0; font-family:sans-serif;
+         display:flex; align-items:center; justify-content:center;
+         height:100vh; margin:0; flex-direction:column; gap:16px; }}
+  .dot {{ width:12px; height:12px; border-radius:50%; background:#00ff88;
+          animation:pulse 1s infinite; display:inline-block; }}
+  @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.2}} }}
+</style>
+</head>
+<body>
+<div class="dot"></div>
+<div>Signing you in...</div>
+<script>
+{data_js}
+// Try Capacitor Browser close
+setTimeout(function() {{
+  try {{
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser) {{
+      window.Capacitor.Plugins.Browser.close();
+    }}
+  }} catch(e) {{}}
+  // Fallback: redirect to app
+  window.location.href = '{redirect_url}';
+}}, 800);
+</script>
+</body>
+</html>"""
+    return html
 
 
 @app.route("/strava/connect")
