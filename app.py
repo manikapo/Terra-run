@@ -1136,65 +1136,15 @@ def _handle_google_callback(redirect_uri, is_native=False):
 
 def _native_close_page(uid=None, name=None, error=False):
     """
-    Returns an HTML page that:
-    1. Stores login data in localStorage (shared with the WebView)
-    2. Closes itself using Capacitor Browser plugin
-    3. Falls back to redirecting to the main app URL
+    For native app OAuth: redirect directly back to the app URL with
+    credentials as query params. The Capacitor server.url WebView will
+    load this URL and the google=connected handler picks up the params.
+    This is more reliable than localStorage which is not shared between
+    the Capacitor Browser tab and the main WebView.
     """
     if error:
-        data_js = "window.opener && window.opener.postMessage({google:'error'}, '*');"
-        redirect_url = f"{FRONTEND_URL}?google=error"
-    else:
-        data_js = f"""
-        // Store credentials so main WebView picks them up
-        try {{
-            localStorage.setItem('terra_uid', '{uid}');
-            localStorage.setItem('terra_name', decodeURIComponent('{name}'));
-            localStorage.setItem('_google_login_done', '1');
-        }} catch(e) {{}}
-        // Notify any opener window
-        try {{
-            if (window.opener) {{
-                window.opener.postMessage({{google:'connected', uid:'{uid}', name:'{name}'}}, '*');
-            }}
-        }} catch(e) {{}}
-        """
-        redirect_url = f"{FRONTEND_URL}?google=connected&uid={uid}&name={name}"
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Signing in...</title>
-<style>
-  body {{ background:#0a0c0f; color:#e8eaf0; font-family:sans-serif;
-         display:flex; align-items:center; justify-content:center;
-         height:100vh; margin:0; flex-direction:column; gap:16px; }}
-  .dot {{ width:12px; height:12px; border-radius:50%; background:#00ff88;
-          animation:pulse 1s infinite; display:inline-block; }}
-  @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.2}} }}
-</style>
-</head>
-<body>
-<div class="dot"></div>
-<div>Signing you in...</div>
-<script>
-{data_js}
-// Try Capacitor Browser close
-setTimeout(function() {{
-  try {{
-    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser) {{
-      window.Capacitor.Plugins.Browser.close();
-    }}
-  }} catch(e) {{}}
-  // Fallback: redirect to app
-  window.location.href = '{redirect_url}';
-}}, 800);
-</script>
-</body>
-</html>"""
-    return html
+        return redirect(f"{FRONTEND_URL}?google=error")
+    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={name}")
 
 
 @app.route("/strava/connect")
