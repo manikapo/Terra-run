@@ -45,19 +45,18 @@ ALLOWED_ORIGINS = [
     "http://localhost:5500",
     "http://localhost:3000",
     "http://127.0.0.1:5500",
-    "capacitor://localhost",       # Capacitor Android app
-    "ionic://localhost",           # Ionic fallback
-    "http://localhost",            # Capacitor fallback
-    "null",                        # document.write() loses origin
+    "capacitor://localhost",
+    "ionic://localhost",
+    "http://localhost",
 ]
 
 def get_cors_origin(request_origin):
-    """Return the origin if allowed, else the primary frontend."""
-    if not request_origin:
+    """Return allowed origin for CORS header."""
+    if not request_origin or request_origin == "null":
+        # document.write() or no origin — allow as play.8me.in
         return "https://play.8me.in"
     if request_origin in ALLOWED_ORIGINS:
         return request_origin
-    # Allow any capacitor:// or ionic:// origin
     if request_origin.startswith("capacitor://") or request_origin.startswith("ionic://"):
         return request_origin
     return "https://play.8me.in"
@@ -78,13 +77,8 @@ def handle_preflight():
 
 @app.after_request
 def after_request(response):
-    request_origin = request.headers.get("Origin")
+    request_origin = request.headers.get("Origin", "")
     origin = get_cors_origin(request_origin)
-    # When origin is "null" (document.write loses origin context),
-    # reflect back the request origin or use wildcard.
-    # Cannot use "null" with credentials:true — use play.8me.in instead.
-    if origin == "null" or origin == "https://play.8me.in" and request_origin == "null":
-        origin = "https://play.8me.in"
     response.headers["Access-Control-Allow-Origin"]      = origin
     response.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
     response.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
