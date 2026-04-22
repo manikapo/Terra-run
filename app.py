@@ -306,8 +306,13 @@ def get_uid():
     return None
 @app.route("/api/guest-login", methods=["POST"])
 def guest_login():
-    data = request.json or {}
-    name = data.get("name","Runner").strip() or "Runner"
+    # Accept both JSON and form-encoded bodies
+    # (form-encoded avoids CORS preflight on Android WebView)
+    if request.content_type and 'application/x-www-form-urlencoded' in request.content_type:
+        data = request.form
+    else:
+        data = request.json or {}
+    name = (data.get("name") or "Runner").strip() or "Runner"
     existing_uid = data.get("uid") or data.get("_uid")
     conn = get_db(); c = conn.cursor()
     # Ensure photo_url column exists
