@@ -52,9 +52,12 @@ ALLOWED_ORIGINS = [
 
 def get_cors_origin(request_origin):
     """Return allowed origin for CORS header."""
-    if not request_origin or request_origin == "null":
-        # document.write() or no origin — allow as play.8me.in
+    if not request_origin:
         return "https://play.8me.in"
+    if request_origin == "null":
+        # file:// and local dev send Origin: null — reflect it back so the
+        # browser doesn't block the response (needed for local testing & APK cold start)
+        return "null"
     if request_origin in ALLOWED_ORIGINS:
         return request_origin
     if request_origin.startswith("capacitor://") or request_origin.startswith("ionic://"):
