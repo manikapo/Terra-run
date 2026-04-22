@@ -72,7 +72,8 @@ def handle_preflight():
         res.headers["Access-Control-Allow-Origin"]      = origin
         res.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
         res.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
-        res.headers["Access-Control-Allow-Credentials"] = "true"
+        if origin and origin != "null" and origin != "*":
+            res.headers["Access-Control-Allow-Credentials"] = "true"
         res.headers["Access-Control-Max-Age"]           = "3600"
         res.headers["Vary"]                             = "Origin"
         res.status_code = 204
@@ -85,7 +86,11 @@ def after_request(response):
     response.headers["Access-Control-Allow-Origin"]      = origin
     response.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
     response.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
+    # Only send Allow-Credentials when origin is a real domain (not null/wildcard).
+    # Android WebView with credentials:omit doesn't need this, but it must not be
+    # "true" when the origin is "null" or it causes issues on strict WebViews.
+    if origin and origin != "null" and origin != "*":
+        response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Max-Age"]           = "3600"
     response.headers["Vary"]                             = "Origin"
     return response
@@ -872,13 +877,13 @@ def get_leaderboard():
 # ── Ping + debug ─────────────────────────────────────────────────────────────
 @app.route("/ping")
 def ping():
-    """Instant health check."""
+    """Instant health check — wildcard CORS so APK, file://, and web all work."""
     import os
-    db_exists = os.path.exists(DB_PATH)
-    db_size   = os.path.getsize(DB_PATH) if db_exists else 0
-    data_dir  = os.path.dirname(DB_PATH)
-    dir_exists = os.path.exists(data_dir)
-    return jsonify({
+    db_exists  = os.path.exists(DB_PATH)
+    db_size    = os.path.getsize(DB_PATH) if db_exists else 0
+    data_dir   = os.path.dirname(DB_PATH)
+    dir_exists = os.path.exists(data_dir) if data_dir else True
+    resp = jsonify({
         "ok": True,
         "message": "TERRA RUN is alive",
         "version": "2.0",
@@ -889,6 +894,11 @@ def ping():
         "data_dir_exists": dir_exists,
         "cwd": os.getcwd()
     })
+    # Wildcard CORS — /ping needs no auth, must be reachable from any origin
+    resp.headers["Access-Control-Allow-Origin"]  = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Id"
+    return resp
 
 @app.route("/test")
 def test():
