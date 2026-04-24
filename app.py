@@ -52,12 +52,9 @@ ALLOWED_ORIGINS = [
 
 def get_cors_origin(request_origin):
     """Return allowed origin for CORS header."""
-    if not request_origin:
+    if not request_origin or request_origin == "null":
+        # document.write() or no origin — allow as play.8me.in
         return "https://play.8me.in"
-    if request_origin == "null":
-        # file:// and local dev send Origin: null — reflect it back so the
-        # browser doesn't block the response (needed for local testing & APK cold start)
-        return "null"
     if request_origin in ALLOWED_ORIGINS:
         return request_origin
     if request_origin.startswith("capacitor://") or request_origin.startswith("ionic://"):
@@ -72,8 +69,7 @@ def handle_preflight():
         res.headers["Access-Control-Allow-Origin"]      = origin
         res.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
         res.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
-        if origin and origin != "null" and origin != "*":
-            res.headers["Access-Control-Allow-Credentials"] = "true"
+        res.headers["Access-Control-Allow-Credentials"] = "true"
         res.headers["Access-Control-Max-Age"]           = "3600"
         res.headers["Vary"]                             = "Origin"
         res.status_code = 204
@@ -86,11 +82,7 @@ def after_request(response):
     response.headers["Access-Control-Allow-Origin"]      = origin
     response.headers["Access-Control-Allow-Headers"]     = "Content-Type,X-User-Id,Authorization,Accept,X-Admin-Token"
     response.headers["Access-Control-Allow-Methods"]     = "GET,POST,PUT,DELETE,OPTIONS"
-    # Only send Allow-Credentials when origin is a real domain (not null/wildcard).
-    # Android WebView with credentials:omit doesn't need this, but it must not be
-    # "true" when the origin is "null" or it causes issues on strict WebViews.
-    if origin and origin != "null" and origin != "*":
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Max-Age"]           = "3600"
     response.headers["Vary"]                             = "Origin"
     return response
@@ -306,13 +298,8 @@ def get_uid():
     return None
 @app.route("/api/guest-login", methods=["POST"])
 def guest_login():
-    # Accept both JSON and form-encoded bodies
-    # (form-encoded avoids CORS preflight on Android WebView)
-    if request.content_type and 'application/x-www-form-urlencoded' in request.content_type:
-        data = request.form
-    else:
-        data = request.json or {}
-    name = (data.get("name") or "Runner").strip() or "Runner"
+    data = request.json or {}
+    name = data.get("name","Runner").strip() or "Runner"
     existing_uid = data.get("uid") or data.get("_uid")
     conn = get_db(); c = conn.cursor()
     # Ensure photo_url column exists
@@ -786,12 +773,30 @@ def create_territory():
                     print(f"Steal error for territory {t['id']}:", steal_err)
                     continue
 
-            # Remove own overlapping zones
+            # Merge own overlapping zones — expand territory instead of delete+replace
             my_t = c.execute("SELECT * FROM territories WHERE user_id=? AND id!=?", (uid, tid)).fetchall()
             for t in my_t:
                 try:
                     t_poly = json.loads(t["polygon"])
-                    if polygons_truly_overlap(polygon, t_poly):
+                    if not polygons_truly_overlap(polygon, t_poly):
+                        continue
+                    # Merge: combine all points from both polygons and compute new convex hull
+                    try:
+                        from shapely.geometry import MultiPoint
+                        combined_pts = [(p[0], p[1]) for p in polygon] + [(p[0], p[1]) for p in t_poly]
+                        merged_hull = MultiPoint(combined_pts).convex_hull
+                        if merged_hull.geom_type == 'Polygon':
+                            merged_coords = [[c[0], c[1]] for c in merged_hull.exterior.coords[:-1]]
+                            merged_area = merged_hull.area
+                            # Update current territory with merged polygon
+                            c.execute("UPDATE territories SET polygon=?, area=? WHERE id=?",
+                                     (json.dumps(merged_coords), merged_area, tid))
+                            polygon = merged_coords  # use merged polygon going forward
+                        # Delete the old overlapping territory (it's been merged in)
+                        c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                        c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
+                    except Exception as merge_err:
+                        print("Merge error, falling back to delete:", merge_err)
                         c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
                         c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
                 except: pass
@@ -882,13 +887,13 @@ def get_leaderboard():
 # ── Ping + debug ─────────────────────────────────────────────────────────────
 @app.route("/ping")
 def ping():
-    """Instant health check — wildcard CORS so APK, file://, and web all work."""
+    """Instant health check."""
     import os
-    db_exists  = os.path.exists(DB_PATH)
-    db_size    = os.path.getsize(DB_PATH) if db_exists else 0
-    data_dir   = os.path.dirname(DB_PATH)
-    dir_exists = os.path.exists(data_dir) if data_dir else True
-    resp = jsonify({
+    db_exists = os.path.exists(DB_PATH)
+    db_size   = os.path.getsize(DB_PATH) if db_exists else 0
+    data_dir  = os.path.dirname(DB_PATH)
+    dir_exists = os.path.exists(data_dir)
+    return jsonify({
         "ok": True,
         "message": "TERRA RUN is alive",
         "version": "2.0",
@@ -899,11 +904,6 @@ def ping():
         "data_dir_exists": dir_exists,
         "cwd": os.getcwd()
     })
-    # Wildcard CORS — /ping needs no auth, must be reachable from any origin
-    resp.headers["Access-Control-Allow-Origin"]  = "*"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Id"
-    return resp
 
 @app.route("/test")
 def test():
