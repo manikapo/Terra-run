@@ -1130,6 +1130,79 @@ def google_callback():
     return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={encoded_name}")
 
 
+
+
+@app.route("/auth/google/native", methods=["POST"])
+def google_native_login():
+    """
+    Native Android app sends Google ID token directly.
+    We verify it with Google, then create/update the user and return uid+name.
+    No browser redirect needed — pure API call.
+    """
+    data     = request.json or {}
+    id_token = data.get("id_token", "").strip()
+
+    if not id_token:
+        return jsonify({"ok": False, "error": "id_token required"}), 400
+
+    # Verify the ID token with Google
+    try:
+        verify_url = f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}"
+        r = requests.get(verify_url, timeout=10)
+        token_info = r.json()
+    except Exception as e:
+        print("Google token verify error:", e)
+        return jsonify({"ok": False, "error": "Token verification failed"}), 400
+
+    # Check token is valid
+    if "error_description" in token_info or "sub" not in token_info:
+        print("Invalid Google token:", token_info)
+        return jsonify({"ok": False, "error": "Invalid token"}), 401
+
+    # Verify audience matches our Android or Web client ID
+    aud = token_info.get("aud", "")
+    valid_clients = [
+        GOOGLE_ANDROID_CLIENT_ID,
+        GOOGLE_CLIENT_ID,
+    ]
+    if aud not in valid_clients:
+        print(f"Token audience mismatch: {aud}")
+        return jsonify({"ok": False, "error": "Token audience mismatch"}), 401
+
+    google_id = token_info.get("sub")
+    email     = token_info.get("email", "")
+    name      = token_info.get("name", email.split("@")[0] if email else "Runner")
+    photo_url = token_info.get("picture", "")
+    avatar    = name[:2].upper()
+    uid       = f"google_{google_id}"
+
+    conn = get_db(); c = conn.cursor()
+    try:    c.execute("ALTER TABLE users ADD COLUMN photo_url TEXT"); conn.commit()
+    except: pass
+    try:    c.execute("ALTER TABLE users ADD COLUMN email TEXT");     conn.commit()
+    except: pass
+
+    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not user:
+        count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        color = COLOR_POOL[count % len(COLOR_POOL)]
+        now   = datetime.utcnow().isoformat() + "Z"
+        c.execute("""INSERT OR IGNORE INTO users
+                     (id, name, avatar, color, total_km, zones, strava_token, created_at, photo_url, email)
+                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                  (uid, name, avatar, color, 0.0, 0, None, now, photo_url, email))
+    else:
+        c.execute("UPDATE users SET name=?, photo_url=?, email=? WHERE id=?",
+                  (name, photo_url, email, uid))
+
+    conn.commit()
+    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    session["user_id"] = uid
+
+    print(f"Native Google login: {uid} ({name})")
+    return jsonify({"ok": True, "user": dict(user)})
+
 @app.route("/strava/connect")
 def strava_connect():
     uid = get_uid()
