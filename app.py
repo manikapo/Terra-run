@@ -796,9 +796,9 @@ def create_territory():
                         c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
                         c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
                     except Exception as merge_err:
-                        print("Merge error, falling back to delete:", merge_err)
-                        c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
-                        c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
+                        # On merge error — keep both territories, don't delete
+                        # This ensures running over your own territory never removes it
+                        print("Merge error — keeping both territories:", merge_err)
                 except: pass
 
             conn.commit()
