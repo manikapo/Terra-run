@@ -1226,7 +1226,9 @@ def strava_connect():
     uid = get_uid()
     # No login required — uid passed via query param or session
     # If none, use "new" and the callback will create the user fresh
-    state = uid or "new"
+    source = request.args.get('source', 'web')
+    # Encode source in state so callback knows where to redirect
+    state = (uid or "new") + "|" + source
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={STRAVA_CLIENT_ID}&response_type=code"
            f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:write&state={state}")
@@ -1407,7 +1409,12 @@ def decode_polyline(polyline_str):
 @app.route("/strava/callback")
 def strava_callback():
     code  = request.args.get("code")
+    state_raw = request.args.get("state", "new|web")
     if not code: return "Missing code", 400
+    # Parse state: "uid|source"
+    state_parts = state_raw.split("|", 1)
+    cb_uid    = state_parts[0] if state_parts[0] != "new" else None
+    cb_source = state_parts[1] if len(state_parts) > 1 else "web"
 
     r = requests.post("https://www.strava.com/oauth/token", data={
         "client_id": STRAVA_CLIENT_ID,
@@ -1462,8 +1469,11 @@ def strava_callback():
     conn.close()
     session["user_id"] = uid
 
-    frontend_url = os.getenv("FRONTEND_URL", "https://play.8me.in")
-    return redirect(frontend_url + "/?uid=" + uid + "&strava=connected")
+    # Redirect to app.html for native app, root for web
+    if cb_source == "app":
+        return redirect(f"https://play.8me.in/app.html?uid={uid}&strava=connected&name={requests.utils.quote(name)}")
+    else:
+        return redirect(f"https://play.8me.in?uid={uid}&strava=connected&name={requests.utils.quote(name)}")
 
 @app.route("/api/strava/activities")
 def strava_activities():
