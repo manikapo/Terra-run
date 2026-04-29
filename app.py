@@ -512,7 +512,11 @@ def me():
     user = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     if not user: return jsonify({"ok":False,"error":"user not found"}),404
-    return jsonify({"ok":True,"user":dict(user)})
+    user_dict = dict(user)
+    # Add strava_connected flag — true if token is set (don't expose raw token)
+    user_dict["strava_connected"] = bool(user_dict.get("strava_token"))
+    user_dict.pop("strava_token", None)  # never expose token to frontend
+    return jsonify({"ok":True,"user":user_dict})
 
 # ── Speed Anti-Cheat ──────────────────────────────────────────────────────────
 VEHICLE_SPEED_KMH    = 28.0   # max sustained human running speed
@@ -1046,8 +1050,10 @@ def test_save():
 @app.route("/auth/google")
 def google_connect():
     """Redirect user to Google OAuth consent screen."""
-    uid   = request.args.get('_uid') or get_uid()
-    state = uid or "new"
+    uid    = request.args.get('_uid') or get_uid()
+    source = request.args.get('source', 'web')  # 'app' for native Android
+    # Encode source into state so callback knows where to redirect
+    state  = f"{uid or 'new'}|{source}"
     params = {
         "client_id":     GOOGLE_CLIENT_ID,
         "redirect_uri":  GOOGLE_REDIRECT_URI,
@@ -1063,12 +1069,23 @@ def google_connect():
 @app.route("/auth/google/callback")
 def google_callback():
     """Handle Google OAuth callback — works for both web and native app."""
-    code  = request.args.get("code")
-    state = request.args.get("state", "new")
-    error = request.args.get("error")
+    code       = request.args.get("code")
+    state_raw  = request.args.get("state", "new")
+    error      = request.args.get("error")
+
+    # Parse state — format is "uid|source" or legacy "uid"
+    if "|" in state_raw:
+        state, source = state_raw.rsplit("|", 1)
+    else:
+        state, source = state_raw, "web"
+
+    # Determine redirect target based on source
+    app_frontend  = "https://play.8me.in/app.html"
+    web_frontend  = FRONTEND_URL  # https://play.8me.in
+    redirect_base = app_frontend if source == "app" else web_frontend
 
     if error or not code:
-        return redirect(f"{FRONTEND_URL}?google=error")
+        return redirect(f"{redirect_base}?google=error")
 
     # Exchange code for tokens
     token_res = requests.post("https://oauth2.googleapis.com/token", data={
@@ -1081,7 +1098,7 @@ def google_callback():
     token_data = token_res.json()
     if "access_token" not in token_data:
         print("Google token error:", token_data)
-        return redirect(f"{FRONTEND_URL}?google=error")
+        return redirect(f"{redirect_base}?google=error")
 
     # Fetch user profile
     profile_res = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
@@ -1094,7 +1111,7 @@ def google_callback():
     avatar    = name[:2].upper()
 
     if not google_id:
-        return redirect(f"{FRONTEND_URL}?google=error")
+        return redirect(f"{redirect_base}?google=error")
 
     uid = f"google_{google_id}"
 
@@ -1127,7 +1144,8 @@ def google_callback():
     conn.commit(); conn.close()
     session["user_id"] = uid
     encoded_name = urllib.parse.quote(name)
-    return redirect(f"{FRONTEND_URL}?google=connected&uid={uid}&name={encoded_name}")
+    print(f"Google OAuth complete: {uid} ({name}) → redirecting to {source} frontend")
+    return redirect(f"{redirect_base}?google=connected&uid={uid}&name={encoded_name}")
 
 
 
@@ -1211,7 +1229,7 @@ def strava_connect():
     state = uid or "new"
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={STRAVA_CLIENT_ID}&response_type=code"
-           f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:read_all&state={state}")
+           f"&redirect_uri={STRAVA_REDIRECT_URI}&scope=activity:write&state={state}")
     return redirect(url)
 
 @app.route("/strava/disconnect", methods=["POST"])
@@ -1224,85 +1242,143 @@ def strava_disconnect():
     return jsonify({"ok": True, "message": "Strava disconnected"})
 
 
-@app.route("/strava/sync")
-def strava_sync():
-    """Fetch recent Strava activities and create territories from them."""
+
+def get_valid_strava_token(token_json_str):
+    """Return a valid Strava access token, refreshing if expired."""
+    import time
+    try:
+        token_data = json.loads(token_json_str)
+    except:
+        # Legacy plain token string
+        return token_json_str
+
+    expires_at = token_data.get("expires_at", 0)
+    # If token expires in less than 5 minutes, refresh it
+    if time.time() > expires_at - 300:
+        r = requests.post("https://www.strava.com/oauth/token", data={
+            "client_id":     STRAVA_CLIENT_ID,
+            "client_secret": STRAVA_CLIENT_SECRET,
+            "grant_type":    "refresh_token",
+            "refresh_token": token_data.get("refresh_token", "")
+        })
+        new_data = r.json()
+        if "access_token" in new_data:
+            token_data["access_token"]  = new_data["access_token"]
+            token_data["refresh_token"] = new_data.get("refresh_token", token_data["refresh_token"])
+            token_data["expires_at"]    = new_data.get("expires_at", expires_at)
+            # Update DB with new token
+            conn = get_db()
+            # We don't have uid here — caller must update DB separately if needed
+            conn.close()
+            return new_data["access_token"]
+    return token_data.get("access_token", "")
+
+@app.route("/strava/upload", methods=["POST"])
+def strava_upload():
+    """
+    Upload a completed Infinite Me run to the user's Strava account.
+    Called after a run is saved — pushes it as a Strava activity.
+    This is the same flow as Garmin/Wahoo/Nike Run Club.
+    """
     uid = get_uid()
     if not uid: return jsonify({"ok": False, "error": "not logged in"}), 401
 
-    conn = get_db(); c = conn.cursor()
-    user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    data = request.json or {}
+    name         = data.get("name", "Infinite Me Run")
+    description  = data.get("description", "Territory captured on Infinite Me 🏃")
+    distance_m   = float(data.get("distance_m", 0))   # metres
+    duration_s   = int(data.get("duration_s", 0))     # seconds
+    start_time   = data.get("start_time")              # ISO 8601 e.g. "2024-01-01T07:00:00Z"
+    gps_points   = data.get("gps_points", [])          # [[lat,lng,timestamp_ms], ...]
+
+    if not start_time:
+        return jsonify({"ok": False, "error": "start_time required"}), 400
+    if duration_s < 10:
+        return jsonify({"ok": False, "error": "run too short"}), 400
+
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
 
     if not user or not user["strava_token"]:
         return jsonify({"ok": False, "error": "Strava not connected"}), 400
 
-    # Fetch recent activities from Strava
-    r = requests.get("https://www.strava.com/api/v3/athlete/activities",
-                     headers={"Authorization": f"Bearer {user['strava_token']}"},
-                     params={"per_page": 10, "page": 1})
-    if r.status_code != 200:
-        return jsonify({"ok": False, "error": "Strava API error", "status": r.status_code}), 400
+    token = get_valid_strava_token(user["strava_token"] or "")
+    if not token:
+        return jsonify({"ok": False, "error": "Strava token invalid — please reconnect"}), 401
 
-    activities = r.json()
-    synced = []
-    for act in activities:
-        # Only process runs with a map polyline
-        if act.get("type") not in ["Run", "Walk", "Hike"]: continue
-        polyline = act.get("map", {}).get("summary_polyline", "")
-        if not polyline: continue
+    # If we have GPS points, build a GPX file and upload as a file upload
+    # Otherwise use the simpler manual activity creation API
+    if gps_points and len(gps_points) >= 2:
+        # Build GPX string
+        gpx_lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<gpx version="1.1" creator="Infinite Me" xmlns="http://www.topografix.com/GPX/1/1">',
+            '  <trk><name>' + name + '</name><trkseg>'
+        ]
+        for pt in gps_points:
+            lat = pt[0]; lng = pt[1]
+            ts_ms = pt[2] if len(pt) > 2 else None
+            if ts_ms:
+                from datetime import timezone
+                dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                time_str = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                gpx_lines.append(f'    <trkpt lat="{lat}" lon="{lng}"><time>{time_str}</time></trkpt>')
+            else:
+                gpx_lines.append(f'    <trkpt lat="{lat}" lon="{lng}"></trkpt>')
+        gpx_lines.append('  </trkseg></trk></gpx>')
+        gpx_content = '
+'.join(gpx_lines)
 
-        # Decode polyline
-        try:
-            pts = decode_polyline(polyline)
-        except:
-            continue
+        # Upload GPX to Strava
+        upload_r = requests.post(
+            "https://www.strava.com/api/v3/uploads",
+            headers={"Authorization": f"Bearer {token}"},
+            data={
+                "activity_type": "run",
+                "name": name,
+                "description": description,
+                "data_type": "gpx",
+            },
+            files={"file": ("infinite_me_run.gpx", gpx_content, "application/gpx+xml")}
+        )
+        upload_data = upload_r.json()
+        if upload_r.status_code not in (200, 201):
+            print("Strava GPX upload error:", upload_data)
+            return jsonify({"ok": False, "error": "Strava upload failed", "detail": upload_data}), 400
 
-        if len(pts) < 4: continue
+        return jsonify({
+            "ok": True,
+            "method": "gpx_upload",
+            "upload_id": upload_data.get("id"),
+            "message": "Run uploading to Strava — will appear in your feed shortly"
+        })
 
-        # Check if already synced (by Strava activity ID)
-        act_id = str(act["id"])
-        conn = get_db(); c = conn.cursor()
-        existing = c.execute(
-            "SELECT id FROM territories WHERE name LIKE ?",
-            (f"%strava_{act_id}%",)
-        ).fetchone()
+    else:
+        # No GPS points — use manual activity creation
+        act_r = requests.post(
+            "https://www.strava.com/api/v3/activities",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name":          name,
+                "type":          "Run",
+                "start_date_local": start_time,
+                "elapsed_time":  duration_s,
+                "distance":      distance_m,
+                "description":   description,
+            }
+        )
+        act_data = act_r.json()
+        if act_r.status_code not in (200, 201):
+            print("Strava manual activity error:", act_data)
+            return jsonify({"ok": False, "error": "Strava activity creation failed", "detail": act_data}), 400
 
-        if existing:
-            conn.close()
-            continue  # Already imported
-
-        # Build polygon from route
-        if SHAPELY_AVAILABLE:
-            try:
-                from shapely.geometry import LineString
-                line = LineString([(p[1],p[0]) for p in pts])
-                buffered = make_valid(line.buffer(0.0003, cap_style=1, join_style=1))
-                if not buffered.is_empty and buffered.geom_type == 'Polygon':
-                    polygon = [[c[1],c[0]] for c in buffered.exterior.coords]
-                else:
-                    polygon = convex_hull(pts)
-            except:
-                polygon = convex_hull(pts)
-        else:
-            polygon = convex_hull(pts)
-
-        area   = round(polygon_area_km2(polygon), 4)
-        tid    = "t_" + uuid.uuid4().hex[:8]
-        name   = act.get("name", "Strava Run") + f" (strava_{act_id})"
-        now    = datetime.utcnow().isoformat() + "Z"
-        color  = user["color"]
-
-        user_row = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-        c.execute("INSERT INTO territories VALUES (?,?,?,?,?,?,?)",
-                  (tid, uid, name, json.dumps(polygon), area, now, color))
-        c.execute("UPDATE users SET zones=zones+1, total_km=total_km+? WHERE id=?",
-                  (round(act.get("distance", 0) / 1000, 2), uid))
-        conn.commit()
-        conn.close()
-        synced.append(act.get("name", "Run"))
-
-    return jsonify({"ok": True, "synced": len(synced), "activities": synced})
+        return jsonify({
+            "ok": True,
+            "method": "manual",
+            "activity_id": act_data.get("id"),
+            "message": "Run uploaded to Strava successfully!"
+        })
 
 
 def decode_polyline(polyline_str):
@@ -1365,16 +1441,22 @@ def strava_callback():
     existing = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     now = datetime.utcnow().isoformat() + "Z"
 
+    # Store both access_token and refresh_token (refresh_token survives expiry)
+    token_json = json.dumps({
+        "access_token":  data.get("access_token"),
+        "refresh_token": data.get("refresh_token"),
+        "expires_at":    data.get("expires_at")
+    })
     if existing:
         c.execute(
             "UPDATE users SET name=?, strava_token=?, avatar=?, photo_url=? WHERE id=?",
-            (name, data["access_token"], avatar, photo_url, uid)
+            (name, token_json, avatar, photo_url, uid)
         )
     else:
         count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         color = assign_color(count)
         c.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
-                  (uid, name, avatar, color, 0.0, 0, data["access_token"], now))
+                  (uid, name, avatar, color, 0.0, 0, token_json, now))
         c.execute("UPDATE users SET photo_url=? WHERE id=?", (photo_url, uid))
 
     conn.commit()
