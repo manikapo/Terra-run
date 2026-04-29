@@ -1327,8 +1327,7 @@ def strava_upload():
             else:
                 gpx_lines.append(f'    <trkpt lat="{lat}" lon="{lng}"></trkpt>')
         gpx_lines.append('  </trkseg></trk></gpx>')
-        gpx_content = '
-'.join(gpx_lines)
+        gpx_content = "\n".join(gpx_lines)
 
         # Upload GPX to Strava
         upload_r = requests.post(
