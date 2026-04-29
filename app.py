@@ -1080,7 +1080,7 @@ def google_callback():
         state, source = state_raw, "web"
 
     # Determine redirect target based on source
-    app_frontend  = "https://play.8me.in"
+    app_frontend  = "https://play.8me.in/app.html"
     web_frontend  = FRONTEND_URL  # https://play.8me.in
     redirect_base = app_frontend if source == "app" else web_frontend
 
