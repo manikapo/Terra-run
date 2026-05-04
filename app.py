@@ -224,7 +224,10 @@ def polygons_truly_overlap(poly1, poly2):
         try:
             s1 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly1]))
             s2 = make_valid(ShapelyPolygon([(p[0],p[1]) for p in poly2]))
-            return s1.intersects(s2) and not s1.touches(s2)
+            # Use intersection area > threshold — avoids false negatives on thin slivers
+            # where touches() would block a real overlap
+            inter = s1.intersection(s2)
+            return inter.area > 1e-12
         except: pass
     for pt in poly1:
         if point_in_polygon(pt, poly2): return True
@@ -810,8 +813,8 @@ def create_territory():
                         new_gps_raw = sampled if not sim_mode else polygon
                         combined_gps = new_gps_raw + old_gps  # new run first, then old
                         c.execute(
-                            "UPDATE territories SET polygon=?, area=?, gps_path=? WHERE id=?",
-                            (json.dumps(merged_coords), merged_area, json.dumps(combined_gps), tid)
+                            "UPDATE territories SET polygon=?, area_km2=?, gps_path=? WHERE id=?",
+                            (json.dumps(merged_coords), round(merged_area, 4), json.dumps(combined_gps), tid)
                         )
                         polygon = merged_coords  # use merged polygon going forward
                         # Delete the old overlapping territory (absorbed into merged)
