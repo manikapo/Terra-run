@@ -779,31 +779,50 @@ def create_territory():
 
             # Merge own overlapping zones — expand territory instead of delete+replace
             my_t = c.execute("SELECT * FROM territories WHERE user_id=? AND id!=?", (uid, tid)).fetchall()
-            for t in my_t:
+            for ot in my_t:
                 try:
-                    t_poly = json.loads(t["polygon"])
+                    t_poly = json.loads(ot["polygon"])
                     if not polygons_truly_overlap(polygon, t_poly):
                         continue
-                    # Merge: combine all points from both polygons and compute new convex hull
-                    try:
-                        from shapely.geometry import MultiPoint
-                        combined_pts = [(p[0], p[1]) for p in polygon] + [(p[0], p[1]) for p in t_poly]
-                        merged_hull = MultiPoint(combined_pts).convex_hull
-                        if merged_hull.geom_type == 'Polygon':
-                            merged_coords = [[c[0], c[1]] for c in merged_hull.exterior.coords[:-1]]
-                            merged_area = merged_hull.area
-                            # Update current territory with merged polygon
-                            c.execute("UPDATE territories SET polygon=?, area=? WHERE id=?",
-                                     (json.dumps(merged_coords), merged_area, tid))
-                            polygon = merged_coords  # use merged polygon going forward
-                        # Delete the old overlapping territory (it's been merged in)
-                        c.execute("DELETE FROM territories WHERE id=?", (t["id"],))
+                    # Merge using Shapely unary_union → convex_hull for clean expansion
+                    merged_coords = None
+                    merged_area = 0
+                    if SHAPELY_AVAILABLE:
+                        try:
+                            from shapely.ops import unary_union
+                            s1 = make_valid(ShapelyPolygon([(p[0], p[1]) for p in polygon]))
+                            s2 = make_valid(ShapelyPolygon([(p[0], p[1]) for p in t_poly]))
+                            merged = unary_union([s1, s2])
+                            # Take convex hull to get a clean single polygon
+                            hull = merged.convex_hull
+                            if hull.geom_type == 'Polygon':
+                                merged_coords = [[c[0], c[1]] for c in hull.exterior.coords[:-1]]
+                                merged_area = hull.area
+                            elif merged.geom_type == 'Polygon':
+                                # Union is already a clean polygon (no need for hull)
+                                merged_coords = [[c[0], c[1]] for c in merged.exterior.coords[:-1]]
+                                merged_area = merged.area
+                        except Exception as merge_err:
+                            print("Shapely merge error:", merge_err)
+                    if merged_coords and len(merged_coords) >= 3:
+                        # Build combined gps_path: new run path + old territory path
+                        old_gps = json.loads(ot["gps_path"]) if ot["gps_path"] else []
+                        new_gps_raw = sampled if not sim_mode else polygon
+                        combined_gps = new_gps_raw + old_gps  # new run first, then old
+                        c.execute(
+                            "UPDATE territories SET polygon=?, area=?, gps_path=? WHERE id=?",
+                            (json.dumps(merged_coords), merged_area, json.dumps(combined_gps), tid)
+                        )
+                        polygon = merged_coords  # use merged polygon going forward
+                        # Delete the old overlapping territory (absorbed into merged)
+                        c.execute("DELETE FROM territories WHERE id=?", (ot["id"],))
                         c.execute("UPDATE users SET zones=MAX(0,zones-1) WHERE id=?", (uid,))
-                    except Exception as merge_err:
-                        # On merge error — keep both territories, don't delete
-                        # This ensures running over your own territory never removes it
-                        print("Merge error — keeping both territories:", merge_err)
-                except: pass
+                        print(f"Merged territory {ot['id']} into {tid}, new area={merged_area:.8f}")
+                    else:
+                        # Merge failed — keep both territories rather than lose data
+                        print(f"Merge skipped for territory {ot['id']} — could not compute merged polygon")
+                except Exception as outer_merge_err:
+                    print("Merge outer error:", outer_merge_err)
 
             conn.commit()
 
