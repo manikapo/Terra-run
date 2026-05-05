@@ -1497,28 +1497,10 @@ def strava_callback():
     else:
         return redirect(f"https://play.8me.in?uid={uid}&strava=connected&name={requests.utils.quote(name)}")
 
-@app.route("/api/strava/activities")
-def strava_activities():
-    uid = get_uid()
-    if not uid: return jsonify({"error":"not logged in"}),401
-    conn = get_db()
-    user = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    conn.close()
-    if not user or not user["strava_token"]:
-        return jsonify({"error":"Strava not connected"}),400
-    r = requests.get("https://www.strava.com/api/v3/athlete/activities",
-                     headers={"Authorization":f"Bearer {user['strava_token']}"},
-                     params={"per_page":10})
-    result = []
-    for a in r.json():
-        if a.get("type") in ("Run","Walk","Hike"):
-            result.append({"id":a["id"],"name":a["name"],
-                           "distance_km":round(a.get("distance",0)/1000,2),
-                           "date":a.get("start_date_local",""),
-                           "moving_time_s":a.get("moving_time",0)})
-    return jsonify(result)
-
 # ── Admin Panel ───────────────────────────────────────────────────────────────
+# NOTE: /api/strava/activities removed — Strava API agreement prohibits
+# fetching or displaying Strava activity data to any user.
+# Infinite Me only PUSHES runs to Strava (/strava/upload). Never pulls.
 import functools, hashlib as _hl
 
 def admin_required(f):
